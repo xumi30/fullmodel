@@ -14,20 +14,13 @@ import (
 	"time"
 
 	"fullmodel/agent/brain"
+	agentruntime "fullmodel/agent/runtime"
 	"fullmodel/processmessage"
 	"fullmodel/utils/fileop"
 )
 
 type brainSet struct {
-	text        brain.Brain
-	vision      brain.Brain
-	voice       brain.Brain
-	asr         brain.Brain
-	image       brain.Brain
-	imageEdit   brain.Brain
-	textVideo   brain.Brain
-	imageVideo  brain.Brain
-	processor   processmessage.Processor
+	runner      *agentruntime.Runner
 	system      string
 	chatHistory []brain.Message
 }
@@ -79,36 +72,14 @@ func newBrainSet(configFile, systemPrompt string) (*brainSet, error) {
 		return nil, err
 	}
 
-	textCfg, err := cfgs.Config(fileop.BrainConfigText)
+	registry, err := agentruntime.NewRegistryFromConfigs(cfgs)
 	if err != nil {
 		return nil, err
 	}
-	visionCfg, err := cfgs.Config(fileop.BrainConfigVision)
-	if err != nil {
-		return nil, err
-	}
-	voiceCfg, err := cfgs.Config(fileop.BrainConfigVoice)
-	if err != nil {
-		return nil, err
-	}
-	imageCfg, err := cfgs.Config(fileop.BrainConfigImage)
-	if err != nil {
-		return nil, err
-	}
-
-	app := &brainSet{
-		text:       brain.NewTextBrain(toBrainConfig(textCfg)),
-		vision:     brain.NewImageBrain(toBrainConfig(visionCfg)),
-		voice:      brain.NewText2VoiceBrain(toBrainConfig(voiceCfg)),
-		asr:        brain.NewSpeech2TxtASRBrain(toBrainConfig(voiceCfg)),
-		image:      brain.NewImageGenerateBrain(toBrainConfig(imageCfg)),
-		imageEdit:  brain.NewImageEditBrain(toBrainConfig(imageCfg)),
-		textVideo:  brain.NewVideoTextGenerateBrain(toBrainConfig(imageCfg)),
-		imageVideo: brain.NewImage2VideoGenerateBrain(toBrainConfig(imageCfg)),
-		system:     systemPrompt,
-	}
-	app.processor = processmessage.NewProcessor(processmessage.BrainSelectorFunc(app.selectBrain))
-	return app, nil
+	return &brainSet{
+		runner: agentruntime.NewRunner(registry, nil),
+		system: systemPrompt,
+	}, nil
 }
 
 func loadConfigs(configFile string) (*fileop.BrainConfigs, error) {
@@ -116,54 +87,6 @@ func loadConfigs(configFile string) (*fileop.BrainConfigs, error) {
 		return fileop.LoadBrainConfigsFromFile(configFile)
 	}
 	return fileop.LoadBrainConfigs()
-}
-
-func toBrainConfig(cfg *fileop.ModelConfig) *brain.QwenConfig {
-	if cfg == nil {
-		return &brain.QwenConfig{}
-	}
-	return &brain.QwenConfig{
-		APIKey:       cfg.APIKey,
-		BaseURL:      cfg.BaseURL,
-		Model:        cfg.Model,
-		Region:       cfg.Region,
-		Provider:     brain.ProviderType(cfg.Provider),
-		APIEndpoints: cloneEndpoints(cfg.APIEndpoints),
-	}
-}
-
-func cloneEndpoints(in map[string]string) map[string]string {
-	if in == nil {
-		return nil
-	}
-	out := make(map[string]string, len(in))
-	for k, v := range in {
-		out[k] = v
-	}
-	return out
-}
-
-func (app *brainSet) selectBrain(kind processmessage.Kind) (brain.Brain, bool) {
-	switch kind {
-	case processmessage.KindText, processmessage.KindChat:
-		return app.text, true
-	case processmessage.KindImage, processmessage.KindVideo, processmessage.KindMultimodal:
-		return app.vision, true
-	case processmessage.KindSpeechToText:
-		return app.asr, true
-	case processmessage.KindTextToSpeech:
-		return app.voice, true
-	case processmessage.KindImageGenerate:
-		return app.image, true
-	case processmessage.KindImageEdit:
-		return app.imageEdit, true
-	case processmessage.KindTextToVideo:
-		return app.textVideo, true
-	case processmessage.KindImageToVideo:
-		return app.imageVideo, true
-	default:
-		return nil, false
-	}
 }
 
 func (app *brainSet) handle(ctx context.Context, line string, streamByDefault bool) error {
@@ -275,16 +198,19 @@ func (app *brainSet) runChat(ctx context.Context, text string, stream bool) erro
 		History: app.chatHistory,
 		Text:    text,
 	}
-	out, err := app.processor.Process(msg, processmessage.Options{Context: ctx, Stream: stream})
+	out, err := app.runner.Run(ctx, agentruntime.Request{
+		Message: msg,
+		Options: processmessage.Options{Context: ctx, Stream: stream},
+	})
 	if err != nil {
 		return err
 	}
-	if err := printOutput(out, ""); err != nil {
+	if err := printOutput(out.Output, ""); err != nil {
 		return err
 	}
 
 	app.chatHistory = append(app.chatHistory, brain.NewUserMessage(text))
-	if assistant := strings.TrimSpace(out.Content.Text); assistant != "" {
+	if assistant := strings.TrimSpace(out.Output.Content.Text); assistant != "" {
 		app.chatHistory = append(app.chatHistory, brain.NewAssistantMessage(assistant))
 	}
 	return nil
@@ -296,11 +222,11 @@ func (app *brainSet) run(ctx context.Context, msg processmessage.Message, opts p
 
 func (app *brainSet) runWithOutput(ctx context.Context, msg processmessage.Message, opts processmessage.Options, outPath string) error {
 	opts.Context = ctx
-	out, err := app.processor.Process(msg, opts)
+	out, err := app.runner.Run(ctx, agentruntime.Request{Message: msg, Options: opts})
 	if err != nil {
 		return err
 	}
-	return printOutput(out, outPath)
+	return printOutput(out.Output, outPath)
 }
 
 func printOutput(out *brain.BrainOutput, outPath string) error {
