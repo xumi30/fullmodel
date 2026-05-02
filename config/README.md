@@ -2,13 +2,17 @@
 
 配置文件：`config/llm.yaml`
 
-最常用的写法只需要一份公共配置，加上各能力的模型名：
+最常用的写法只需要一个 profile，加上各能力的模型名：
 
 ```yaml
 defaults:
-  api_key: ${DASHSCOPE_API_KEY}
-  provider: qwen
-  region: cn-beijing
+  profile: qwen
+
+profiles:
+  qwen:
+    api_key: ${DASHSCOPE_API_KEY}
+    provider: qwen
+    region: cn-beijing
 
 brains:
   text:
@@ -21,7 +25,7 @@ brains:
     model: qwen-image-2.0-pro
 ```
 
-`defaults` 会先应用到所有能力，`brains.<name>` 只覆盖自己的差异字段。
+`defaults.profile` 会先应用到所有能力，`brains.<name>` 只覆盖自己的差异字段。
 
 支持的能力名：
 
@@ -38,6 +42,7 @@ brains:
 api_key: ${DASHSCOPE_API_KEY}
 base_url: https://example.com/v1
 model: qwen-plus
+profile: qwen
 provider: qwen
 region: cn-beijing
 endpoints:
@@ -48,14 +53,20 @@ endpoints:
 
 ```yaml
 defaults:
-  api_key: ${DASHSCOPE_API_KEY}
-  provider: qwen
-  region: cn-beijing
+  profile: qwen
+
+profiles:
+  qwen:
+    api_key: ${DASHSCOPE_API_KEY}
+    provider: qwen
+    region: cn-beijing
+  openai:
+    api_key: ${OPENAI_API_KEY}
+    provider: openai
 
 brains:
   text:
-    api_key: ${OPENAI_API_KEY}
-    provider: openai
+    profile: openai
     model: gpt-4o
   vision:
     model: qwen-vl-plus

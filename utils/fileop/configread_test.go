@@ -65,6 +65,46 @@ brains:
 		require.Equal(t, "test-model", cfg.Model)
 	})
 
+	t.Run("loads profiles", func(t *testing.T) {
+		t.Setenv("TEST_API_KEY", "profile_key")
+		tmpDir := t.TempDir()
+		restoreRoot := setRuntimeRootForTest(t, tmpDir)
+		defer restoreRoot()
+
+		writeConfig(t, tmpDir, `
+defaults:
+  profile: qwen
+profiles:
+  qwen:
+    api_key: ${TEST_API_KEY}
+    provider: qwen
+    region: cn-beijing
+  local:
+    base_url: http://127.0.0.1:11434/v1
+    provider: openai
+brains:
+  text:
+    profile: local
+    model: local-model
+  image:
+    model: qwen-image
+`)
+
+		cfgs, err := LoadBrainConfigs()
+		require.NoError(t, err)
+
+		text, err := cfgs.Config(BrainConfigText)
+		require.NoError(t, err)
+		require.Equal(t, "local-model", text.Model)
+		require.Equal(t, "openai", text.Provider)
+		require.Equal(t, "http://127.0.0.1:11434/v1", text.BaseURL)
+
+		image, err := cfgs.Config(BrainConfigImage)
+		require.NoError(t, err)
+		require.Equal(t, "profile_key", image.APIKey)
+		require.Equal(t, "qwen", image.Provider)
+	})
+
 	t.Run("missing file", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		restoreRoot := setRuntimeRootForTest(t, tmpDir)

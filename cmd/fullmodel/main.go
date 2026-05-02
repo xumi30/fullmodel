@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"fullmodel/agent/brain"
 	agentruntime "fullmodel/agent/runtime"
@@ -134,8 +135,18 @@ func serve(args []string) error {
 	mux.HandleFunc("POST /v1/tasks", func(w http.ResponseWriter, r *http.Request) {
 		handleCreateTask(w, r, state)
 	})
+	mux.HandleFunc("GET /v1/tasks", func(w http.ResponseWriter, r *http.Request) {
+		writeOK(w, state.tasks.List())
+	})
+	mux.HandleFunc("DELETE /v1/tasks/", func(w http.ResponseWriter, r *http.Request) {
+		handleCancelTask(w, r, state)
+	})
 	mux.HandleFunc("GET /v1/tasks/", func(w http.ResponseWriter, r *http.Request) {
 		handleGetTask(w, r, state)
+	})
+	mux.HandleFunc("GET /v1/artifacts", func(w http.ResponseWriter, r *http.Request) {
+		_ = state.artifacts.CleanupExpired()
+		writeOK(w, state.artifacts.List())
 	})
 	mux.HandleFunc("GET /v1/artifacts/", func(w http.ResponseWriter, r *http.Request) {
 		handleGetArtifact(w, r, state)
@@ -203,7 +214,11 @@ func newServerState(configFile string, taskWorkers int) (*serverState, error) {
 		return nil, err
 	}
 	toolExecutor := agentruntime.NewToolRegistryExecutor(agenttools.Getregistry())
-	artifactStore, err := agentruntime.NewArtifactStore(filepath.Join(fileop.RuntimeRoot(), "data", "artifacts"))
+	artifactStore, err := agentruntime.NewArtifactStoreWithOptions(agentruntime.ArtifactStoreOptions{
+		Root:     filepath.Join(fileop.RuntimeRoot(), "data", "artifacts"),
+		MaxBytes: 128 << 20,
+		TTL:      7 * 24 * time.Hour,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -253,7 +268,10 @@ func runMessage(w http.ResponseWriter, r *http.Request, state *serverState, req 
 		return
 	}
 	rememberSession(req, state.sessions, result.Output)
-	resp, err := responseFromResult(result, state.artifacts)
+	resp, err := responseFromResult(result, state.artifacts, agentruntime.ArtifactMeta{
+		SessionID: req.SessionID,
+		Source:    "message",
+	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -330,14 +348,14 @@ func decodeMedia(in mediaJSON) (brain.MediaResource, error) {
 	return brain.MediaResource{Data: data, MimeType: in.MimeType}, nil
 }
 
-func responseFromResult(result *agentruntime.Result, artifacts *agentruntime.ArtifactStore) (messageResponse, error) {
+func responseFromResult(result *agentruntime.Result, artifacts *agentruntime.ArtifactStore, artifactMeta agentruntime.ArtifactMeta) (messageResponse, error) {
 	if result == nil {
 		return messageResponse{}, nil
 	}
 	resp := responseFromOutput(result.Output)
 	resp.ToolCalls = result.ToolCalls
 	if result.Output != nil && len(result.Output.Content.Audio.Data) > 0 && artifacts != nil {
-		artifact, err := artifacts.Save(result.Output.Content.Audio.Data, firstNonEmpty(result.Output.Content.Audio.MimeType, "audio/mpeg"))
+		artifact, err := artifacts.SaveWithMeta(result.Output.Content.Audio.Data, firstNonEmpty(result.Output.Content.Audio.MimeType, "audio/mpeg"), artifactMeta)
 		if err != nil {
 			return messageResponse{}, err
 		}
@@ -436,7 +454,10 @@ func handleCreateTask(w http.ResponseWriter, r *http.Request, state *serverState
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	task, err := state.tasks.Start(context.Background(), state.runner, agentruntime.Request{Message: msg, Options: opts})
+	task, err := state.tasks.StartWithOptions(context.Background(), state.runner, agentruntime.Request{Message: msg, Options: opts}, agentruntime.TaskOptions{
+		Kind:      string(req.Kind),
+		SessionID: req.SessionID,
+	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -447,6 +468,32 @@ func handleCreateTask(w http.ResponseWriter, r *http.Request, state *serverState
 func handleGetTask(w http.ResponseWriter, r *http.Request, state *serverState) {
 	id := strings.TrimPrefix(r.URL.Path, "/v1/tasks/")
 	task, ok := state.tasks.Get(id)
+	if !ok {
+		writeError(w, http.StatusNotFound, fmt.Errorf("task %s not found", id))
+		return
+	}
+	if task.Status == agentruntime.TaskSucceeded && task.Result != nil && len(task.Artifacts) == 0 {
+		resp, err := responseFromResult(task.Result, state.artifacts, agentruntime.ArtifactMeta{
+			SessionID: task.SessionID,
+			TaskID:    task.ID,
+			Source:    "task",
+		})
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		if len(resp.Artifacts) > 0 {
+			if updated, ok := state.tasks.SetArtifacts(task.ID, resp.Artifacts); ok {
+				task = updated
+			}
+		}
+	}
+	writeOK(w, task)
+}
+
+func handleCancelTask(w http.ResponseWriter, r *http.Request, state *serverState) {
+	id := strings.TrimPrefix(r.URL.Path, "/v1/tasks/")
+	task, ok := state.tasks.Cancel(id)
 	if !ok {
 		writeError(w, http.StatusNotFound, fmt.Errorf("task %s not found", id))
 		return

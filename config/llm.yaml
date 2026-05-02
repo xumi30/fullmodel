@@ -1,11 +1,13 @@
 # AI model config.
-#
-# Keep shared settings in defaults. Put only per-capability differences under brains.
 
 defaults:
-  api_key: ${DASHSCOPE_API_KEY}
-  provider: qwen
-  region: cn-beijing
+  profile: qwen
+
+profiles:
+  qwen:
+    api_key: ${DASHSCOPE_API_KEY}
+    provider: qwen
+    region: cn-beijing
 
 brains:
   text:

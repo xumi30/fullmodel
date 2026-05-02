@@ -47,9 +47,12 @@ var brainConfigDefaults = map[BrainConfigKind]ModelConfig{
 // BrainConfigs mirrors the simple config/llm.yaml shape:
 //
 //	defaults:
-//	  api_key: ${DASHSCOPE_API_KEY}
-//	  provider: qwen
-//	  region: cn-beijing
+//	  profile: qwen
+//	profiles:
+//	  qwen:
+//	    api_key: ${DASHSCOPE_API_KEY}
+//	    provider: qwen
+//	    region: cn-beijing
 //	brains:
 //	  text:
 //	    model: qwen-plus
@@ -61,12 +64,14 @@ var brainConfigDefaults = map[BrainConfigKind]ModelConfig{
 //	    model: qwen-image-2.0-pro
 type BrainConfigs struct {
 	Defaults ModelConfig                     `yaml:"defaults" json:"defaults"`
+	Profiles map[string]ModelConfig          `yaml:"profiles" json:"profiles"`
 	Brains   map[BrainConfigKind]ModelConfig `yaml:"brains" json:"brains"`
 }
 
 // ModelConfig has the same YAML shape as brain.Config, but lives in fileop to
 // avoid an import cycle: fileop -> brain -> logging -> fileop.
 type ModelConfig struct {
+	Profile      string            `yaml:"profile" json:"profile"`
 	APIKey       string            `yaml:"api_key" json:"api_key"`
 	BaseURL      string            `yaml:"base_url" json:"base_url"`
 	Model        string            `yaml:"model" json:"model"`
@@ -138,13 +143,32 @@ func (c *BrainConfigs) Config(kind BrainConfigKind) (*ModelConfig, error) {
 	}
 
 	out := mergeModelConfig(base, c.Defaults)
-	if c.Brains != nil {
-		out = mergeModelConfig(out, c.Brains[kind])
+	if profile := strings.TrimSpace(c.Defaults.Profile); profile != "" {
+		profileCfg, ok := c.Profiles[profile]
+		if !ok {
+			return nil, fmt.Errorf("unknown default profile %q", profile)
+		}
+		out = mergeModelConfig(out, profileCfg)
 	}
+	if c.Brains != nil {
+		brainCfg := c.Brains[kind]
+		if profile := strings.TrimSpace(brainCfg.Profile); profile != "" {
+			profileCfg, ok := c.Profiles[profile]
+			if !ok {
+				return nil, fmt.Errorf("unknown profile %q for brain %q", profile, kind)
+			}
+			out = mergeModelConfig(out, profileCfg)
+		}
+		out = mergeModelConfig(out, brainCfg)
+	}
+	out.Profile = ""
 	return cloneBrainConfig(out), nil
 }
 
 func (c *BrainConfigs) normalize() {
+	if c.Profiles == nil {
+		c.Profiles = map[string]ModelConfig{}
+	}
 	if c.Brains == nil {
 		c.Brains = map[BrainConfigKind]ModelConfig{}
 	}
@@ -152,6 +176,9 @@ func (c *BrainConfigs) normalize() {
 
 func mergeModelConfig(base, override ModelConfig) ModelConfig {
 	out := base
+	if strings.TrimSpace(override.Profile) != "" {
+		out.Profile = override.Profile
+	}
 	if strings.TrimSpace(override.APIKey) != "" {
 		out.APIKey = override.APIKey
 	}

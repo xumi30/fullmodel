@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"testing"
+	"time"
 
 	"fullmodel/agent/brain"
 	"fullmodel/processmessage"
@@ -42,7 +43,8 @@ func TestSessionStoreCopiesMessages(t *testing.T) {
 }
 
 func TestArtifactStoreSaveAndGet(t *testing.T) {
-	store, err := NewArtifactStore(t.TempDir())
+	root := t.TempDir()
+	store, err := NewArtifactStore(root)
 	require.NoError(t, err)
 
 	artifact, err := store.Save([]byte("hello"), "text/plain")
@@ -53,6 +55,46 @@ func TestArtifactStoreSaveAndGet(t *testing.T) {
 	got, ok := store.Get(artifact.ID)
 	require.True(t, ok)
 	require.Equal(t, artifact.Path, got.Path)
+
+	reopened, err := NewArtifactStore(root)
+	require.NoError(t, err)
+	reopenedArtifact, ok := reopened.Get(artifact.ID)
+	require.True(t, ok)
+	require.Equal(t, artifact.Path, reopenedArtifact.Path)
+}
+
+func TestArtifactStoreLifecycle(t *testing.T) {
+	root := t.TempDir()
+	store, err := NewArtifactStoreWithOptions(ArtifactStoreOptions{
+		Root:     root,
+		MaxBytes: 16,
+		TTL:      time.Hour,
+	})
+	require.NoError(t, err)
+
+	artifact, err := store.SaveWithMeta([]byte("hello"), "text/plain", ArtifactMeta{
+		SessionID: "s1",
+		TaskID:    "t1",
+		Source:    "test",
+	})
+	require.NoError(t, err)
+	require.Equal(t, "s1", artifact.SessionID)
+	require.NotNil(t, artifact.ExpiresAt)
+
+	reopened, err := NewArtifactStore(root)
+	require.NoError(t, err)
+	got, ok := reopened.Get(artifact.ID)
+	require.True(t, ok)
+	require.Equal(t, "t1", got.TaskID)
+
+	_, err = store.Save([]byte("this payload is too large"), "text/plain")
+	require.Error(t, err)
+
+	expired := time.Now().UTC().Add(-time.Minute)
+	_, err = store.SaveWithMeta([]byte("bye"), "text/plain", ArtifactMeta{ExpiresAt: &expired})
+	require.NoError(t, err)
+	require.NoError(t, store.CleanupExpired())
+	require.Len(t, store.List(), 1)
 }
 
 func TestFileSessionStorePersistsMessages(t *testing.T) {

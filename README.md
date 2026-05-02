@@ -42,9 +42,13 @@ utils/fileop       配置读取
 
 ```yaml
 defaults:
-  api_key: ${DASHSCOPE_API_KEY}
-  provider: qwen
-  region: cn-beijing
+  profile: qwen
+
+profiles:
+  qwen:
+    api_key: ${DASHSCOPE_API_KEY}
+    provider: qwen
+    region: cn-beijing
 
 brains:
   text:
@@ -63,7 +67,7 @@ brains:
 export DASHSCOPE_API_KEY="your-api-key"
 ```
 
-`defaults` 是公共配置，`brains.<name>` 只写每个能力自己的差异。
+`profiles` 放供应商/API Key/BaseURL 这类通用配置，`brains.<name>` 只写每个能力自己的差异。
 
 ### 2. 在 Go 应用里嵌入
 
@@ -74,34 +78,30 @@ import (
 	"context"
 	"fmt"
 
-	agentruntime "fullmodel/agent/runtime"
-	"fullmodel/processmessage"
-	"fullmodel/utils/fileop"
+	"fullmodel"
 )
 
 func main() {
-	cfgs, err := fileop.LoadBrainConfigs()
+	client, err := fullmodel.Open()
 	if err != nil {
 		panic(err)
 	}
 
-	registry, err := agentruntime.NewRegistryFromConfigs(cfgs)
+	text, err := client.Text(context.Background(), "你好，介绍一下你自己")
 	if err != nil {
 		panic(err)
 	}
 
-	runner := agentruntime.NewRunner(registry, nil)
-	result, err := runner.Run(context.Background(), agentruntime.Request{
-		Message: processmessage.TextMessage{
-			Text: "你好，介绍一下你自己",
-		},
-	})
-	if err != nil {
-		panic(err)
-	}
-
-	fmt.Println(result.Output.Content.Text)
+	fmt.Println(text)
 }
+```
+
+需要更细粒度控制时，也可以继续使用 `processmessage.Message` 和 `runtime.Runner`：
+
+```go
+result, err := client.Run(ctx, processmessage.ImageGenerateMessage{
+	Prompt: "一张极简风格的产品海报",
+})
 ```
 
 ### 3. 开放 HTTP API
@@ -282,6 +282,18 @@ curl -s http://127.0.0.1:8080/v1/tasks \
 curl -s http://127.0.0.1:8080/v1/tasks/<task_id>
 ```
 
+列出任务：
+
+```bash
+curl -s http://127.0.0.1:8080/v1/tasks
+```
+
+取消任务：
+
+```bash
+curl -X DELETE http://127.0.0.1:8080/v1/tasks/<task_id>
+```
+
 任务状态：
 
 ```text
@@ -289,6 +301,7 @@ queued
 running
 succeeded
 failed
+canceled
 ```
 
 任务由内置 worker queue 执行。启动服务时可以调整 worker 数：
@@ -328,6 +341,14 @@ curl -s http://127.0.0.1:8080/v1/messages \
 ```bash
 curl -O http://127.0.0.1:8080/v1/artifacts/<artifact_id>
 ```
+
+列出 artifacts：
+
+```bash
+curl -s http://127.0.0.1:8080/v1/artifacts
+```
+
+HTTP 服务会把二进制结果写到 `data/artifacts`，维护 `.index.json`，默认 7 天过期并限制单个 artifact 最大 128MB。
 
 ### Session 和 Tools
 
@@ -385,10 +406,17 @@ multimodal
 
 ```yaml
 defaults:
-  api_key: ${DASHSCOPE_API_KEY}
-  provider: qwen
-  region: cn-beijing
-  base_url: ""
+  profile: qwen
+
+profiles:
+  qwen:
+    api_key: ${DASHSCOPE_API_KEY}
+    provider: qwen
+    region: cn-beijing
+  local:
+    api_key: local-key
+    provider: openai
+    base_url: http://127.0.0.1:11434/v1
 
 brains:
   text:
@@ -401,20 +429,26 @@ brains:
     model: qwen-image-2.0-pro
 ```
 
-每个 brain 都可以覆盖 `api_key`、`provider`、`region`、`base_url`、`model`、`endpoints`。
+每个 brain 都可以覆盖 `profile`、`api_key`、`provider`、`region`、`base_url`、`model`、`endpoints`。
 
 例如文本走 OpenAI，其他能力走 DashScope：
 
 ```yaml
 defaults:
-  api_key: ${DASHSCOPE_API_KEY}
-  provider: qwen
-  region: cn-beijing
+  profile: qwen
+
+profiles:
+  qwen:
+    api_key: ${DASHSCOPE_API_KEY}
+    provider: qwen
+    region: cn-beijing
+  openai:
+    api_key: ${OPENAI_API_KEY}
+    provider: openai
 
 brains:
   text:
-    api_key: ${OPENAI_API_KEY}
-    provider: openai
+    profile: openai
     model: gpt-4o
   vision:
     model: qwen-vl-plus
@@ -457,9 +491,10 @@ go run ./cmd/fullmodel serve -addr 127.0.0.1:8080
 
 FullModel 现在更像一个应用开放 runtime，而不是单纯 SDK wrapper：
 
-- `agent/runtime` 是推荐主入口
+- `fullmodel.Open()` 是应用内嵌的推荐主入口
+- `agent/runtime` 是底层运行时主入口
 - `processmessage` 是推荐输入边界
 - `cmd/fullmodel` 是开箱即用的 HTTP 服务
 - `cmd/chat` 是本地调试入口
 
-后续可以继续把持久化 memory、任务队列、鉴权、观测指标做成可插拔模块。
+后续可以继续把观测指标、限流、Webhook 回调、更多 provider adapter 做成可插拔模块。

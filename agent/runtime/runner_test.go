@@ -78,6 +78,16 @@ func (fakeToolExecutor) Execute(ctx context.Context, call brain.ToolCall) (strin
 	return `{"time":"now"}`, nil
 }
 
+type cancelAwareBrain struct {
+	started chan struct{}
+}
+
+func (b cancelAwareBrain) ProcessInput(input *brain.BrainInput) (*brain.BrainOutput, error) {
+	close(b.started)
+	<-input.ContextOrBackground().Done()
+	return nil, input.ContextOrBackground().Err()
+}
+
 func TestRunnerRunsToolLoop(t *testing.T) {
 	registry := NewRegistry()
 	brainImpl := &fakeBrain{}
@@ -113,5 +123,28 @@ func TestTaskStoreRunsRequest(t *testing.T) {
 	require.Eventually(t, func() bool {
 		got, ok := store.Get(task.ID)
 		return ok && got.Status == TaskSucceeded && got.Result != nil
+	}, testEventuallyTimeout, testEventuallyTick)
+}
+
+func TestTaskStoreCancel(t *testing.T) {
+	registry := NewRegistry()
+	started := make(chan struct{})
+	require.NoError(t, registry.Register(processmessage.KindText, cancelAwareBrain{started: started}, Capability{}))
+
+	runner := NewRunner(registry, nil)
+	store := NewTaskStore(1)
+	task, err := store.StartWithOptions(context.Background(), runner, Request{
+		Message: processmessage.TextMessage{Text: "hello"},
+	}, TaskOptions{Kind: string(processmessage.KindText), SessionID: "s1"})
+	require.NoError(t, err)
+
+	<-started
+	canceled, ok := store.Cancel(task.ID)
+	require.True(t, ok)
+	require.Equal(t, TaskCanceled, canceled.Status)
+
+	require.Eventually(t, func() bool {
+		got, ok := store.Get(task.ID)
+		return ok && got.Status == TaskCanceled && got.SessionID == "s1"
 	}, testEventuallyTimeout, testEventuallyTick)
 }
