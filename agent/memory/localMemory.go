@@ -4,10 +4,10 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"fullmodel/agent/brain"
-	"fullmodel/agent/tools"
-	"fullmodel/utils"
-	"fullmodel/utils/logging"
+	"github.com/xumi30/fullmodel/agent/brain"
+	"github.com/xumi30/fullmodel/agent/tools"
+	"github.com/xumi30/fullmodel/utils"
+	"github.com/xumi30/fullmodel/utils/logging"
 	"strings"
 	"sync"
 )

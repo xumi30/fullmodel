@@ -2,7 +2,7 @@ package tools
 
 import (
 	"encoding/json"
-	"fullmodel/agent/brain"
+	"github.com/xumi30/fullmodel/agent/brain"
 	"sync"
 )
 

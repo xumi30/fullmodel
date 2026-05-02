@@ -5,7 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"fullmodel/utils/fileop"
+	"github.com/xumi30/fullmodel/utils/fileop"
 	"net/http"
 	"os"
 	"strings"

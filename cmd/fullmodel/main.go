@@ -13,11 +13,11 @@ import (
 	"strings"
 	"time"
 
-	"fullmodel/agent/brain"
-	agentruntime "fullmodel/agent/runtime"
-	agenttools "fullmodel/agent/tools"
-	"fullmodel/processmessage"
-	"fullmodel/utils/fileop"
+	"github.com/xumi30/fullmodel/agent/brain"
+	agentruntime "github.com/xumi30/fullmodel/agent/runtime"
+	agenttools "github.com/xumi30/fullmodel/agent/tools"
+	"github.com/xumi30/fullmodel/processmessage"
+	"github.com/xumi30/fullmodel/utils/fileop"
 )
 
 type messageRequest struct {

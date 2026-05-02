@@ -78,7 +78,7 @@ import (
 	"context"
 	"fmt"
 
-	"fullmodel"
+	"github.com/xumi30/fullmodel"
 )
 
 func main() {

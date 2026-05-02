@@ -3,8 +3,8 @@ package sqlmemory
 import (
 	"database/sql"
 	"fmt"
-	"fullmodel/utils"
-	"fullmodel/utils/logging"
+	"github.com/xumi30/fullmodel/utils"
+	"github.com/xumi30/fullmodel/utils/logging"
 
 	"time"
 )

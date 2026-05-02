@@ -1,9 +1,9 @@
 package runtime
 
 import (
-	"fullmodel/agent/brain"
-	"fullmodel/processmessage"
-	"fullmodel/utils/fileop"
+	"github.com/xumi30/fullmodel/agent/brain"
+	"github.com/xumi30/fullmodel/processmessage"
+	"github.com/xumi30/fullmodel/utils/fileop"
 )
 
 func NewRegistryFromConfigs(cfgs *fileop.BrainConfigs) (*Registry, error) {

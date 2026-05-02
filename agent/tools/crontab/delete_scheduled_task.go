@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"fullmodel/agent/tools"
-	"fullmodel/utils"
+	"github.com/xumi30/fullmodel/agent/tools"
+	"github.com/xumi30/fullmodel/utils"
 )
 
 type DeleteScheduledTaskTool struct{}

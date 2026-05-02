@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"fullmodel/agent/brain"
-	agenttools "fullmodel/agent/tools"
+	"github.com/xumi30/fullmodel/agent/brain"
+	agenttools "github.com/xumi30/fullmodel/agent/tools"
 )
 
 // ToolExecutor executes model-requested tool calls.

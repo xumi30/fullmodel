@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"sort"
 
-	"fullmodel/agent/brain"
-	"fullmodel/processmessage"
+	"github.com/xumi30/fullmodel/agent/brain"
+	"github.com/xumi30/fullmodel/processmessage"
 )
 
 // Capability describes one message capability exposed by the runtime.

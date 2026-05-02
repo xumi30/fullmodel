@@ -4,7 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"fullmodel/utils/logging"
+	"github.com/xumi30/fullmodel/utils/logging"
 
 	"time"
 )

@@ -3,7 +3,7 @@ package crontab
 import (
 	"database/sql"
 	"fmt"
-	"fullmodel/utils/logging"
+	"github.com/xumi30/fullmodel/utils/logging"
 	"os"
 	"path/filepath"
 	"sync"

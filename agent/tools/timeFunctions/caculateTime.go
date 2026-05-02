@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"fullmodel/utils"
+	"github.com/xumi30/fullmodel/utils"
 
 	"strconv"
 	"strings"

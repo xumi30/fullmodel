@@ -8,7 +8,7 @@ import (
 	"strings"
 	"sync"
 
-	"fullmodel/agent/brain"
+	"github.com/xumi30/fullmodel/agent/brain"
 )
 
 // FileSessionStore persists chat histories as one JSON file per session.

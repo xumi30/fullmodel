@@ -1,4 +1,4 @@
-module fullmodel
+module github.com/xumi30/fullmodel
 
 go 1.26.1
 

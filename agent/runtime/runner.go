@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"strings"
 
-	"fullmodel/agent/brain"
-	"fullmodel/processmessage"
+	"github.com/xumi30/fullmodel/agent/brain"
+	"github.com/xumi30/fullmodel/processmessage"
 )
 
 const defaultMaxToolRounds = 4

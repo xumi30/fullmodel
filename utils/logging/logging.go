@@ -5,7 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"fullmodel/utils/fileop"
+	"github.com/xumi30/fullmodel/utils/fileop"
 	"io"
 	"os"
 	"path/filepath"

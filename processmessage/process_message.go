@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"fullmodel/agent/brain"
+	"github.com/xumi30/fullmodel/agent/brain"
 )
 
 // Kind 描述外部输入消息的业务类型。

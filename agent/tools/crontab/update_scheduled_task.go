@@ -4,8 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"fullmodel/agent/tools"
-	"fullmodel/utils"
+	"github.com/xumi30/fullmodel/agent/tools"
+	"github.com/xumi30/fullmodel/utils"
 	"strings"
 	"time"
 )

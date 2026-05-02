@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"fullmodel/processmessage"
-	"fullmodel/utils/fileop"
+	"github.com/xumi30/fullmodel/processmessage"
+	"github.com/xumi30/fullmodel/utils/fileop"
 
 	"github.com/stretchr/testify/require"
 )

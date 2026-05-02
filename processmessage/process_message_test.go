@@ -3,7 +3,7 @@ package processmessage
 import (
 	"testing"
 
-	"fullmodel/agent/brain"
+	"github.com/xumi30/fullmodel/agent/brain"
 
 	"github.com/stretchr/testify/require"
 )

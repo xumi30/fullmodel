@@ -1,7 +1,7 @@
 package runtime
 
 import (
-	"fullmodel/agent/brain"
+	"github.com/xumi30/fullmodel/agent/brain"
 	"sync"
 )
 

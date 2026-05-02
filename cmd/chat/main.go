@@ -13,10 +13,10 @@ import (
 	"strings"
 	"time"
 
-	"fullmodel/agent/brain"
-	agentruntime "fullmodel/agent/runtime"
-	"fullmodel/processmessage"
-	"fullmodel/utils/fileop"
+	"github.com/xumi30/fullmodel/agent/brain"
+	agentruntime "github.com/xumi30/fullmodel/agent/runtime"
+	"github.com/xumi30/fullmodel/processmessage"
+	"github.com/xumi30/fullmodel/utils/fileop"
 )
 
 type brainSet struct {

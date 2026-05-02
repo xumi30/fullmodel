@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"fullmodel/agent/brain"
-	"fullmodel/processmessage"
+	"github.com/xumi30/fullmodel/agent/brain"
+	"github.com/xumi30/fullmodel/processmessage"
 
 	"github.com/stretchr/testify/require"
 )

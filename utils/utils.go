@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"fullmodel/utils/fileop"
+	"github.com/xumi30/fullmodel/utils/fileop"
 	"math/rand"
 	"os"
 	"strings"

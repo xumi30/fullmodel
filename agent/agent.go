@@ -2,7 +2,7 @@ package agent
 
 import (
 	"context"
-	"fullmodel/agent/brain"
+	"github.com/xumi30/fullmodel/agent/brain"
 )
 
 type Agent struct {

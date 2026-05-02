@@ -4,8 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"fullmodel/utils"
-	"fullmodel/utils/logging"
+	"github.com/xumi30/fullmodel/utils"
+	"github.com/xumi30/fullmodel/utils/logging"
 	"io"
 
 	"net/http"
