@@ -11,84 +11,100 @@ type Brain interface {
 	ProcessInput(input *BrainInput) (output *BrainOutput, err error)
 }
 
-// BrainInput 统一的输入结构体
+// BrainInput 统一的输入结构体。
+//
+// 字段按职责分组：Prompt/Messages 描述语义输入，Media 描述多模态资源，
+// Options 描述模型调用参数，Extra 承载提供商特有扩展。
 type BrainInput struct {
-	// 输入模式
-	Mode BrainMode `json:"mode"`
+	Mode     BrainMode       `json:"mode"`
+	Context  context.Context `json:"-"`
+	Prompt   string          `json:"prompt,omitempty"`
+	Messages []Message       `json:"messages,omitempty"`
+	Tools    []Tool          `json:"tools,omitempty"`
+	Media    BrainInputMedia `json:"media,omitempty"`
+	Options  BrainOptions    `json:"options,omitempty"`
+	Extra    map[string]any  `json:"extra,omitempty"`
+}
 
-	// 文本内容 - 用于文本处理和提示
-	Text string `json:"text,omitempty"`
+// BrainInputMedia 描述输入侧多模态资源。
+type BrainInputMedia struct {
+	Parts []ContentPart `json:"parts,omitempty"`
+	Image MediaResource `json:"image,omitempty"`
+	Audio MediaResource `json:"audio,omitempty"`
+	Video MediaResource `json:"video,omitempty"`
+}
 
-	// 结构化消息 - 用于复杂的多轮对话
-	Messages []Message `json:"messages,omitempty"`
+// MediaResource 表示一个 URL 或内存二进制资源。
+type MediaResource struct {
+	URL      string `json:"url,omitempty"`
+	Data     []byte `json:"-"`
+	MimeType string `json:"mime_type,omitempty"`
+}
 
-	Tools []Tool `json:"tools,omitempty"`
-
-	// 多模态内容
-	MultimodalParts []ContentPart `json:"multimodal_parts,omitempty"`
-
-	// 二进制数据
-	ImageData []byte `json:"-"` // 图像二进制数据
-	AudioData []byte `json:"-"` // 音频二进制数据
-	VideoData []byte `json:"-"` // 视频二进制数据
-
-	// URL资源
-	ImageURL string `json:"image_url,omitempty"` // 图像URL
-	AudioURL string `json:"audio_url,omitempty"` // 音频URL
-	VideoURL string `json:"video_url,omitempty"` // 视频URL
-
-	// 配置参数
+// BrainOptions 描述一次模型调用的通用参数。
+type BrainOptions struct {
 	Model       string   `json:"model,omitempty"`
 	Stream      bool     `json:"stream,omitempty"`
 	Temperature *float64 `json:"temperature,omitempty"`
 	TopP        *float64 `json:"top_p,omitempty"`
 	MaxTokens   *int     `json:"max_tokens,omitempty"`
-
-	// 上下文信息
-	Context context.Context `json:"-"`
-
-	// 扩展参数
-	ExtraParams map[string]any `json:"extra_params,omitempty"`
 }
 
-// BrainOutput 统一的输出结构体
+// BrainOutput 统一的输出结构体。
 type BrainOutput struct {
-	// 输出模式
-	Mode BrainMode `json:"mode"`
+	Mode     BrainMode          `json:"mode"`
+	Status   BrainStatus        `json:"status"`
+	Content  BrainOutputContent `json:"content,omitempty"`
+	Stream   StreamOutput       `json:"-"`
+	Choices  []Choice           `json:"choices,omitempty"`
+	Usage    *Usage             `json:"usage,omitempty"`
+	Metadata map[string]any     `json:"metadata,omitempty"`
+}
 
-	// 文本输出 - 主要的处理结果
-	Text string `json:"text,omitempty"`
+// BrainOutputContent 描述非流式结果内容。
+type BrainOutputContent struct {
+	Text     string        `json:"text,omitempty"`
+	Messages []Message     `json:"messages,omitempty"`
+	Image    MediaResource `json:"image,omitempty"`
+	Audio    MediaResource `json:"audio,omitempty"`
+	Video    MediaResource `json:"video,omitempty"`
+}
 
-	// 流式输出通道
-	TextStream  <-chan string `json:"-"`
-	ErrorStream <-chan error  `json:"-"`
-	// ToolCallsStream 流式 Function Calling：每个 chunk 合并后的累积快照（arguments 按片段拼接）。
-	// 与 TextStream 并发读取；无工具调用时通道关闭且不会有元素。
-	ToolCallsStream <-chan []ToolCall `json:"-"`
-
-	// 二进制输出
-	ImageData []byte `json:"-"` // 生成的图像数据
-	AudioData []byte `json:"-"` // 生成的音频数据
-	VideoData []byte `json:"-"` // 生成的视频数据
-
-	// 资源输出
-	ImageURL string `json:"image_url,omitempty"` // 生成的图像URL
-	AudioURL string `json:"audio_url,omitempty"` // 生成的音频URL
-	VideoURL string `json:"video_url,omitempty"` // 生成的视频URL
-
-	// 结构化输出
-	Choices  []Choice  `json:"choices,omitempty"`
-	Messages []Message `json:"messages,omitempty"`
-
-	// 元数据
-	Metadata map[string]any `json:"metadata,omitempty"`
-
-	// 处理统计
-	Usage *Usage `json:"usage,omitempty"`
-
-	// 处理状态
+// BrainStatus 描述处理状态。
+type BrainStatus struct {
 	Success bool   `json:"success"`
 	Error   string `json:"error,omitempty"`
+}
+
+func (input *BrainInput) ContextOrBackground() context.Context {
+	if input != nil && input.Context != nil {
+		return input.Context
+	}
+	return context.Background()
+}
+
+func (input *BrainInput) Parameters() map[string]any {
+	if input == nil {
+		return nil
+	}
+	return input.Extra
+}
+
+func brainError(message string) *BrainOutput {
+	return &BrainOutput{Status: BrainStatus{Success: false, Error: message}}
+}
+
+func brainErrorWithMetadata(message string, metadata map[string]any) *BrainOutput {
+	out := brainError(message)
+	out.Metadata = metadata
+	return out
+}
+
+func brainSuccess(mode BrainMode) BrainOutput {
+	return BrainOutput{
+		Mode:   mode,
+		Status: BrainStatus{Success: true},
+	}
 }
 
 // NewSystemMessage 创建系统消息

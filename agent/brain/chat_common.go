@@ -247,15 +247,11 @@ func snapshotStreamToolCalls(byKey map[string]*streamToolCallAcc, choiceIndex in
 }
 
 func createChatCompletionStream(ctx context.Context, httpClient *http.Client, cfg *Config, req ChatCompletionRequest) (*BrainOutput, error) {
-	chunks := make(chan string, 1)
-	toolCallsCh := make(chan []ToolCall, 64)
-	errors := make(chan error, 1)
+	streamOut := newStreamOutput(ctx, 64)
 	usage := &Usage{}
 
 	go func() {
-		defer close(chunks)
-		defer close(toolCallsCh)
-		defer close(errors)
+		defer streamOut.complete(nil)
 
 		toolAccByKey := make(map[string]*streamToolCallAcc)
 
@@ -264,28 +260,28 @@ func createChatCompletionStream(ctx context.Context, httpClient *http.Client, cf
 
 		requestBody, err := buildRequestBody(req)
 		if err != nil {
-			errors <- err
+			streamOut.fail(err)
 			return
 		}
 
 		logging.Info("Request body: %s", string(requestBody))
 		httpReq, err := http.NewRequestWithContext(ctx, "POST", getChatCompletionsURL(cfg), bytes.NewReader(requestBody))
 		if err != nil {
-			errors <- err
+			streamOut.fail(err)
 			return
 		}
 		setChatHeaders(httpReq, cfg)
 
 		resp, err := httpClient.Do(httpReq)
 		if err != nil {
-			errors <- err
+			streamOut.fail(err)
 			return
 		}
 		defer resp.Body.Close()
 
 		if resp.StatusCode != http.StatusOK {
 			body, _ := io.ReadAll(resp.Body)
-			errors <- fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(body))
+			streamOut.fail(fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(body)))
 			return
 		}
 
@@ -295,7 +291,7 @@ func createChatCompletionStream(ctx context.Context, httpClient *http.Client, cf
 		for scanner.Scan() {
 			select {
 			case <-ctx.Done():
-				errors <- ctx.Err()
+				streamOut.fail(ctx.Err())
 				return
 			default:
 			}
@@ -311,9 +307,9 @@ func createChatCompletionStream(ctx context.Context, httpClient *http.Client, cf
 					if snap := snapshotStreamToolCalls(toolAccByKey, 0); len(snap) > 0 {
 						select {
 						case <-ctx.Done():
-							errors <- ctx.Err()
+							streamOut.fail(ctx.Err())
 							return
-						case toolCallsCh <- snap:
+						case streamOut.toolCh <- snap:
 						}
 					}
 					return
@@ -321,7 +317,7 @@ func createChatCompletionStream(ctx context.Context, httpClient *http.Client, cf
 
 				var chunk ChatCompletionChunk
 				if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-					errors <- fmt.Errorf("failed to decode SSE data chunk: %w", err)
+					streamOut.fail(fmt.Errorf("failed to decode SSE data chunk: %w", err))
 					return
 				}
 
@@ -341,9 +337,9 @@ func createChatCompletionStream(ctx context.Context, httpClient *http.Client, cf
 								if ci == 0 {
 									select {
 									case <-ctx.Done():
-										errors <- ctx.Err()
+										streamOut.fail(ctx.Err())
 										return
-									case toolCallsCh <- snap:
+									case streamOut.toolCh <- snap:
 									}
 								}
 							}
@@ -352,18 +348,18 @@ func createChatCompletionStream(ctx context.Context, httpClient *http.Client, cf
 					if choice.Delta.Content != "" {
 						select {
 						case <-ctx.Done():
-							errors <- ctx.Err()
+							streamOut.fail(ctx.Err())
 							return
-						case chunks <- choice.Delta.Content:
+						case streamOut.textCh <- choice.Delta.Content:
 						}
 					}
 					if choice.FinishReason == "tool_calls" {
 						if snap := snapshotStreamToolCalls(toolAccByKey, ci); len(snap) > 0 && ci == 0 {
 							select {
 							case <-ctx.Done():
-								errors <- ctx.Err()
+								streamOut.fail(ctx.Err())
 								return
-							case toolCallsCh <- snap:
+							case streamOut.toolCh <- snap:
 							}
 						}
 					}
@@ -372,7 +368,7 @@ func createChatCompletionStream(ctx context.Context, httpClient *http.Client, cf
 		}
 
 		if err := scanner.Err(); err != nil && err != io.EOF {
-			errors <- fmt.Errorf("stream scanner error: %w", err)
+			streamOut.fail(fmt.Errorf("stream scanner error: %w", err))
 			return
 		}
 
@@ -380,18 +376,16 @@ func createChatCompletionStream(ctx context.Context, httpClient *http.Client, cf
 		if snap := snapshotStreamToolCalls(toolAccByKey, 0); len(snap) > 0 {
 			select {
 			case <-ctx.Done():
-				errors <- ctx.Err()
+				streamOut.fail(ctx.Err())
 				return
-			case toolCallsCh <- snap:
+			case streamOut.toolCh <- snap:
 			}
 		}
 	}()
 
 	return &BrainOutput{
-		Success:         true,
-		TextStream:      chunks,
-		ToolCallsStream: toolCallsCh,
-		ErrorStream:     errors,
-		Usage:           usage,
+		Status: BrainStatus{Success: true},
+		Stream: streamOut,
+		Usage:  usage,
 	}, nil
 }

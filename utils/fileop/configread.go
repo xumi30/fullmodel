@@ -9,50 +9,59 @@ import (
 	"go.yaml.in/yaml/v2"
 )
 
-const (
-	defaultLLMConfigFile       = "llm.yaml"
-	legacyDefaultLLMConfigFile = "llm_congfig.yaml"
-)
+const defaultLLMConfigFile = "llm.yaml"
 
-// BrainConfigKind marks the three model config groups used by the brain package.
+// BrainConfigKind marks a model capability configured in config/llm.yaml.
 type BrainConfigKind string
 
 const (
 	BrainConfigText   BrainConfigKind = "text"
 	BrainConfigVision BrainConfigKind = "vision"
 	BrainConfigVoice  BrainConfigKind = "voice"
+	BrainConfigImage  BrainConfigKind = "image"
 )
 
-// BrainConfigs mirrors config/llm.yaml and keeps each class aligned with brain.Config.
-//
-// Supported YAML shape:
-//
-//	text:
-//	  api_key: ${DASHSCOPE_API_KEY}
-//	  model: qwen-plus
-//	  region: cn-beijing
-//	  provider: qwen
-//	vision:
-//	  api_key: ${DASHSCOPE_API_KEY}
-//	  model: qwen-vl-plus
-//	voice:
-//	  api_key: ${DASHSCOPE_API_KEY}
-//	  model: cosyvoice-v3-flash
-//
-// Backward-compatible aliases are also accepted: visual/image for vision,
-// speech/audio for voice, and llm/chat for text.
-type BrainConfigs struct {
-	Text   ModelConfig `yaml:"text"`
-	Vision ModelConfig `yaml:"vision"`
-	Voice  ModelConfig `yaml:"voice"`
-	Image  ModelConfig `yaml:"image_generate"`
+var brainConfigDefaults = map[BrainConfigKind]ModelConfig{
+	BrainConfigText: {
+		Provider: "qwen",
+		Region:   "cn-beijing",
+		Model:    "qwen-plus",
+	},
+	BrainConfigVision: {
+		Provider: "qwen",
+		Region:   "cn-beijing",
+		Model:    "qwen-vl-plus",
+	},
+	BrainConfigVoice: {
+		Provider: "qwen",
+		Region:   "cn-beijing",
+		Model:    "cosyvoice-v3-flash",
+	},
+	BrainConfigImage: {
+		Provider: "qwen",
+		Region:   "cn-beijing",
+		Model:    "qwen-image-2.0-pro",
+	},
+}
 
-	LLM         ModelConfig `yaml:"llm"`
-	Chat        ModelConfig `yaml:"chat"`
-	Visual      ModelConfig `yaml:"visual"`
-	LegacyImage ModelConfig `yaml:"image"`
-	Speech      ModelConfig `yaml:"speech"`
-	Audio       ModelConfig `yaml:"audio"`
+// BrainConfigs mirrors the simple config/llm.yaml shape:
+//
+//	defaults:
+//	  api_key: ${DASHSCOPE_API_KEY}
+//	  provider: qwen
+//	  region: cn-beijing
+//	brains:
+//	  text:
+//	    model: qwen-plus
+//	  vision:
+//	    model: qwen-vl-plus
+//	  voice:
+//	    model: cosyvoice-v3-flash
+//	  image:
+//	    model: qwen-image-2.0-pro
+type BrainConfigs struct {
+	Defaults ModelConfig                     `yaml:"defaults" json:"defaults"`
+	Brains   map[BrainConfigKind]ModelConfig `yaml:"brains" json:"brains"`
 }
 
 // ModelConfig has the same YAML shape as brain.Config, but lives in fileop to
@@ -67,8 +76,6 @@ type ModelConfig struct {
 }
 
 // LoadBrainConfigs reads config/llm.yaml under the runtime config folder.
-// It falls back to the historical config/llm_congfig.yaml when the new file
-// has not been created yet.
 func LoadBrainConfigs() (*BrainConfigs, error) {
 	return LoadBrainConfigsFromFile(defaultLLMConfigFile)
 }
@@ -78,22 +85,12 @@ func LoadBrainConfigsFromFile(filename string) (*BrainConfigs, error) {
 	path := configFilePath(filename)
 	data, err := os.ReadFile(path)
 	if err != nil {
-		if strings.TrimSpace(filename) == defaultLLMConfigFile && os.IsNotExist(err) {
-			legacyPath := configFilePath(legacyDefaultLLMConfigFile)
-			if legacyData, legacyErr := os.ReadFile(legacyPath); legacyErr == nil {
-				path = legacyPath
-				data = legacyData
-				err = nil
-			}
-		}
-	}
-	if err != nil {
 		return nil, fmt.Errorf("read brain config %s: %w", path, err)
 	}
-	data = []byte(os.ExpandEnv(string(data)))
 
 	var cfg BrainConfigs
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
+	expanded := []byte(os.ExpandEnv(string(data)))
+	if err := yaml.Unmarshal(expanded, &cfg); err != nil {
 		return nil, fmt.Errorf("parse brain config %s: %w", path, err)
 	}
 	cfg.normalize()
@@ -122,11 +119,7 @@ func LoadVoiceBrainConfig() (*ModelConfig, error) {
 }
 
 func LoadImageGenerateBrainConfig() (*ModelConfig, error) {
-	cfgs, err := LoadBrainConfigs()
-	if err != nil {
-		return nil, err
-	}
-	return cloneBrainConfig(cfgs.Image), nil
+	return LoadBrainConfig(BrainConfigImage)
 }
 
 func DefaultLLMConfigPath() string {
@@ -138,81 +131,63 @@ func (c *BrainConfigs) Config(kind BrainConfigKind) (*ModelConfig, error) {
 	if c == nil {
 		return nil, fmt.Errorf("brain configs is nil")
 	}
-	switch kind {
-	case BrainConfigText:
-		return cloneBrainConfig(c.Text), nil
-	case BrainConfigVision:
-		return cloneBrainConfig(c.Vision), nil
-	case BrainConfigVoice:
-		return cloneBrainConfig(c.Voice), nil
-	default:
+
+	base, ok := brainConfigDefaults[kind]
+	if !ok {
 		return nil, fmt.Errorf("unknown brain config kind %q", kind)
 	}
+
+	out := mergeModelConfig(base, c.Defaults)
+	if c.Brains != nil {
+		out = mergeModelConfig(out, c.Brains[kind])
+	}
+	return cloneBrainConfig(out), nil
 }
 
 func (c *BrainConfigs) normalize() {
-	if isZeroBrainConfig(c.Text) {
-		c.Text = firstNonZeroBrainConfig(c.LLM, c.Chat)
-	}
-	if isZeroBrainConfig(c.Vision) {
-		c.Vision = firstNonZeroBrainConfig(c.Visual, c.LegacyImage)
-	}
-	if isZeroBrainConfig(c.Voice) {
-		c.Voice = firstNonZeroBrainConfig(c.Speech, c.Audio)
-	}
-	if isZeroBrainConfig(c.Image) {
-		c.Image = firstNonZeroBrainConfig(c.LegacyImage, c.Vision)
-		if !isZeroBrainConfig(c.Image) && isZeroBrainConfig(c.LegacyImage) {
-			c.Image.BaseURL = ""
-			c.Image.Model = ""
-		}
-	}
-
-	applyBrainConfigDefaults(&c.Text, "qwen", "cn-beijing", "qwen-plus")
-	applyBrainConfigDefaults(&c.Vision, "qwen", "cn-beijing", "qwen-vl-plus")
-	applyBrainConfigDefaults(&c.Voice, "qwen", "cn-beijing", "cosyvoice-v3-flash")
-	applyBrainConfigDefaults(&c.Image, "qwen", "cn-beijing", "qwen-image-2.0-pro")
-}
-
-func applyBrainConfigDefaults(cfg *ModelConfig, provider, region, model string) {
-	if cfg.Provider == "" {
-		cfg.Provider = provider
-	}
-	if cfg.Region == "" {
-		cfg.Region = region
-	}
-	if cfg.Model == "" {
-		cfg.Model = model
+	if c.Brains == nil {
+		c.Brains = map[BrainConfigKind]ModelConfig{}
 	}
 }
 
-func firstNonZeroBrainConfig(candidates ...ModelConfig) ModelConfig {
-	for _, candidate := range candidates {
-		if !isZeroBrainConfig(candidate) {
-			return candidate
-		}
+func mergeModelConfig(base, override ModelConfig) ModelConfig {
+	out := base
+	if strings.TrimSpace(override.APIKey) != "" {
+		out.APIKey = override.APIKey
 	}
-	return ModelConfig{}
-}
-
-func isZeroBrainConfig(cfg ModelConfig) bool {
-	return strings.TrimSpace(cfg.APIKey) == "" &&
-		strings.TrimSpace(cfg.BaseURL) == "" &&
-		strings.TrimSpace(cfg.Model) == "" &&
-		strings.TrimSpace(cfg.Region) == "" &&
-		cfg.Provider == "" &&
-		len(cfg.APIEndpoints) == 0
+	if strings.TrimSpace(override.BaseURL) != "" {
+		out.BaseURL = override.BaseURL
+	}
+	if strings.TrimSpace(override.Model) != "" {
+		out.Model = override.Model
+	}
+	if strings.TrimSpace(override.Region) != "" {
+		out.Region = override.Region
+	}
+	if strings.TrimSpace(override.Provider) != "" {
+		out.Provider = override.Provider
+	}
+	if len(override.APIEndpoints) > 0 {
+		out.APIEndpoints = cloneEndpoints(override.APIEndpoints)
+	}
+	return out
 }
 
 func cloneBrainConfig(cfg ModelConfig) *ModelConfig {
 	out := cfg
-	if cfg.APIEndpoints != nil {
-		out.APIEndpoints = make(map[string]string, len(cfg.APIEndpoints))
-		for key, value := range cfg.APIEndpoints {
-			out.APIEndpoints[key] = value
-		}
-	}
+	out.APIEndpoints = cloneEndpoints(cfg.APIEndpoints)
 	return &out
+}
+
+func cloneEndpoints(endpoints map[string]string) map[string]string {
+	if endpoints == nil {
+		return nil
+	}
+	out := make(map[string]string, len(endpoints))
+	for key, value := range endpoints {
+		out[key] = value
+	}
+	return out
 }
 
 func configFilePath(filename string) string {

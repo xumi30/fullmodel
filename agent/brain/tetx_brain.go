@@ -26,17 +26,14 @@ func NewTextBrain(config *QwenConfig) *TextBrain {
 // ProcessInput 实现 Brain 接口
 func (tb *TextBrain) ProcessInput(input *BrainInput) (*BrainOutput, error) {
 	if input == nil {
-		return &BrainOutput{
-			Success: false,
-			Error:   "input is nil",
-		}, fmt.Errorf("input is nil")
+		return brainError("input is nil"), fmt.Errorf("input is nil")
 	}
 
 	// 将 BrainInput 转换为 ChatCompletionRequest
 	req := &ChatCompletionRequest{
-		Model:    input.Model,
+		Model:    input.Options.Model,
 		Messages: input.Messages,
-		Stream:   input.Stream,
+		Stream:   input.Options.Stream,
 		Tools:    input.Tools,
 	}
 
@@ -46,51 +43,41 @@ func (tb *TextBrain) ProcessInput(input *BrainInput) (*BrainOutput, error) {
 	}
 
 	// 调用千问模型
-	if input.Stream {
-		return tb.CreateChatCompletionStream(input.Context, *req)
+	ctx := input.ContextOrBackground()
+	if input.Options.Stream {
+		return tb.CreateChatCompletionStream(ctx, *req)
 	}
-	response, err := tb.CreateChatCompletion(input.Context, *req)
+	response, err := tb.CreateChatCompletion(ctx, *req)
 
 	if err != nil {
-		return &BrainOutput{
-			Success: false,
-			Error:   err.Error(),
-		}, err
+		return brainError(err.Error()), err
 	}
 
 	if len(response.Choices) == 0 {
-		return &BrainOutput{
-			Success: false,
-			Error:   "no response from model",
-		}, fmt.Errorf("no response from model")
+		return brainError("no response from model"), fmt.Errorf("no response from model")
 	}
 
 	content, _ := response.Choices[0].Message.Content.(string)
 	if content == "" && len(response.Choices[0].Message.ToolCalls) == 0 {
-		return &BrainOutput{
-			Success: false,
-			Error:   "empty response content",
-		}, fmt.Errorf("empty response content")
+		return brainError("empty response content"), fmt.Errorf("empty response content")
 	}
 
-	return &BrainOutput{
-		Success: true,
-		Text:    content,
-		Mode:    BrainModeText,
-		Choices: response.Choices,
-		Messages: []Message{
-			{
-				Role:      "assistant",
-				Content:   content,
-				ToolCalls: response.Choices[0].Message.ToolCalls,
-			},
+	out := brainSuccess(BrainModeText)
+	out.Content.Text = content
+	out.Content.Messages = []Message{
+		{
+			Role:      "assistant",
+			Content:   content,
+			ToolCalls: response.Choices[0].Message.ToolCalls,
 		},
-		Usage: &Usage{
-			PromptTokens:     response.Usage.PromptTokens,
-			CompletionTokens: response.Usage.CompletionTokens,
-			TotalTokens:      response.Usage.TotalTokens,
-		},
-	}, nil
+	}
+	out.Choices = response.Choices
+	out.Usage = &Usage{
+		PromptTokens:     response.Usage.PromptTokens,
+		CompletionTokens: response.Usage.CompletionTokens,
+		TotalTokens:      response.Usage.TotalTokens,
+	}
+	return &out, nil
 }
 
 // CreateChatCompletion 创建聊天完成 (非流式)

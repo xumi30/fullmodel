@@ -1,0 +1,21 @@
+# AI model config.
+#
+# Keep shared settings in defaults. Put only per-capability differences under brains.
+
+defaults:
+  api_key: ${DASHSCOPE_API_KEY}
+  provider: qwen
+  region: cn-beijing
+
+brains:
+  text:
+    model: qwen-plus
+
+  vision:
+    model: qwen-vl-plus
+
+  voice:
+    model: cosyvoice-v3-flash
+
+  image:
+    model: qwen-image-2.0-pro

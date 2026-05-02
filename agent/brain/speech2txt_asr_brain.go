@@ -35,12 +35,12 @@ type funASRRunTask struct {
 		Streaming string `json:"streaming"`
 	} `json:"header"`
 	Payload struct {
-		TaskGroup   string         `json:"task_group"`
-		Task        string         `json:"task"`
-		Function    string         `json:"function"`
-		Model       string         `json:"model"`
-		Parameters  map[string]any `json:"parameters"`
-		Input       map[string]any `json:"input"`
+		TaskGroup  string         `json:"task_group"`
+		Task       string         `json:"task"`
+		Function   string         `json:"function"`
+		Model      string         `json:"model"`
+		Parameters map[string]any `json:"parameters"`
+		Input      map[string]any `json:"input"`
 	} `json:"payload"`
 }
 
@@ -57,11 +57,11 @@ type funASRFinishTask struct {
 
 type funASREvent struct {
 	Header struct {
-		TaskID        string         `json:"task_id"`
-		Event         string         `json:"event"`
-		ErrorCode     string         `json:"error_code,omitempty"`
-		ErrorMessage  string         `json:"error_message,omitempty"`
-		Attributes    map[string]any `json:"attributes,omitempty"`
+		TaskID       string         `json:"task_id"`
+		Event        string         `json:"event"`
+		ErrorCode    string         `json:"error_code,omitempty"`
+		ErrorMessage string         `json:"error_message,omitempty"`
+		Attributes   map[string]any `json:"attributes,omitempty"`
 	} `json:"header"`
 	Payload struct {
 		Output struct {
@@ -77,19 +77,16 @@ type funASREvent struct {
 
 func (b *Speech2TxtASRBrain) ProcessInput(input *BrainInput) (*BrainOutput, error) {
 	if input == nil {
-		return &BrainOutput{Success: false, Error: "input is nil"}, fmt.Errorf("input is nil")
+		return brainError("input is nil"), fmt.Errorf("input is nil")
 	}
-	ctx := input.Context
-	if ctx == nil {
-		ctx = context.Background()
-	}
+	ctx := input.ContextOrBackground()
 
-	audio := input.AudioData
+	audio := input.Media.Audio.Data
 	if len(audio) == 0 {
-		return &BrainOutput{Success: false, Error: "missing audio bytes (BrainInput.AudioData)"}, fmt.Errorf("missing audio bytes (BrainInput.AudioData)")
+		return brainError("missing audio bytes (BrainInput.Media.Audio.Data)"), fmt.Errorf("missing audio bytes (BrainInput.Media.Audio.Data)")
 	}
 
-	model := input.Model
+	model := input.Options.Model
 	if model == "" {
 		model = b.config.Model
 	}
@@ -101,9 +98,9 @@ func (b *Speech2TxtASRBrain) ProcessInput(input *BrainInput) (*BrainOutput, erro
 		"sample_rate": 16000,
 		"format":      "wav",
 	}
-	if input.ExtraParams != nil {
+	if input.Extra != nil {
 		// 允许用户覆盖 sample_rate / format / 其他 Fun-ASR 参数
-		for k, v := range input.ExtraParams {
+		for k, v := range input.Extra {
 			params[k] = v
 		}
 	}
@@ -128,12 +125,12 @@ func (b *Speech2TxtASRBrain) ProcessInput(input *BrainInput) (*BrainOutput, erro
 
 	taskID, err := randomTaskID32()
 	if err != nil {
-		return &BrainOutput{Success: false, Error: err.Error()}, err
+		return brainError(err.Error()), err
 	}
 
 	conn, err := b.dial(ctx)
 	if err != nil {
-		return &BrainOutput{Success: false, Error: err.Error()}, err
+		return brainError(err.Error()), err
 	}
 	defer conn.Close()
 
@@ -180,12 +177,12 @@ func (b *Speech2TxtASRBrain) ProcessInput(input *BrainInput) (*BrainOutput, erro
 	run.Payload.Input = map[string]any{}
 
 	if err := conn.WriteJSON(run); err != nil {
-		return &BrainOutput{Success: false, Error: err.Error()}, err
+		return brainError(err.Error()), err
 	}
 
 	// 等 task-started
 	if err := b.waitEvent(ctx, events, readErr, "task-started"); err != nil {
-		return &BrainOutput{Success: false, Error: err.Error()}, err
+		return brainError(err.Error()), err
 	}
 
 	// 发送音频二进制流
@@ -197,12 +194,12 @@ func (b *Speech2TxtASRBrain) ProcessInput(input *BrainInput) (*BrainOutput, erro
 
 		select {
 		case <-ctx.Done():
-			return &BrainOutput{Success: false, Error: ctx.Err().Error()}, ctx.Err()
+			return brainError(ctx.Err().Error()), ctx.Err()
 		default:
 		}
 
 		if err := conn.WriteMessage(websocket.BinaryMessage, audio[off:end]); err != nil {
-			return &BrainOutput{Success: false, Error: err.Error()}, err
+			return brainError(err.Error()), err
 		}
 		time.Sleep(interval)
 	}
@@ -214,7 +211,7 @@ func (b *Speech2TxtASRBrain) ProcessInput(input *BrainInput) (*BrainOutput, erro
 	fin.Header.Streaming = "duplex"
 	fin.Payload.Input = map[string]any{}
 	if err := conn.WriteJSON(fin); err != nil {
-		return &BrainOutput{Success: false, Error: err.Error()}, err
+		return brainError(err.Error()), err
 	}
 
 	// 收集 result-generated，直到 task-finished 或 task-failed
@@ -224,10 +221,10 @@ func (b *Speech2TxtASRBrain) ProcessInput(input *BrainInput) (*BrainOutput, erro
 	for {
 		select {
 		case <-ctx.Done():
-			return &BrainOutput{Success: false, Error: ctx.Err().Error()}, ctx.Err()
+			return brainError(ctx.Err().Error()), ctx.Err()
 		case err := <-readErr:
 			if err != nil {
-				return &BrainOutput{Success: false, Error: err.Error()}, err
+				return brainError(err.Error()), err
 			}
 		case ev, ok := <-events:
 			if !ok {
@@ -236,7 +233,9 @@ func (b *Speech2TxtASRBrain) ProcessInput(input *BrainInput) (*BrainOutput, erro
 				if final == "" {
 					final = strings.TrimSpace(lastText)
 				}
-				return &BrainOutput{Success: true, Mode: BrainModeASR, Text: final}, nil
+				result := brainSuccess(BrainModeASR)
+				result.Content.Text = final
+				return &result, nil
 			}
 
 			switch ev.Header.Event {
@@ -257,14 +256,10 @@ func (b *Speech2TxtASRBrain) ProcessInput(input *BrainInput) (*BrainOutput, erro
 				if final == "" {
 					final = strings.TrimSpace(lastText)
 				}
-				return &BrainOutput{
-					Success: true,
-					Mode:    BrainModeASR,
-					Text:    final,
-					Metadata: map[string]any{
-						"task_id": taskID,
-					},
-				}, nil
+				result := brainSuccess(BrainModeASR)
+				result.Content.Text = final
+				result.Metadata = map[string]any{"task_id": taskID}
+				return &result, nil
 			case "task-failed":
 				msg := ev.Header.ErrorMessage
 				if msg == "" {
@@ -273,7 +268,7 @@ func (b *Speech2TxtASRBrain) ProcessInput(input *BrainInput) (*BrainOutput, erro
 				if ev.Header.ErrorCode != "" {
 					msg = fmt.Sprintf("%s: %s", ev.Header.ErrorCode, msg)
 				}
-				return &BrainOutput{Success: false, Error: msg, Metadata: map[string]any{"task_id": taskID}}, fmt.Errorf("%s", msg)
+				return brainErrorWithMetadata(msg, map[string]any{"task_id": taskID}), fmt.Errorf("%s", msg)
 			}
 		}
 	}
@@ -337,4 +332,3 @@ func randomTaskID32() (string, error) {
 	}
 	return hex.EncodeToString(b[:]), nil // 32 hex chars
 }
-

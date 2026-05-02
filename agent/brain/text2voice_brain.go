@@ -17,7 +17,7 @@ import (
 //
 // 时序：run-task -> 等 task-started -> (一个或多个) continue-task -> finish-task -> 接收 binary 音频分片 -> task-finished
 //
-// 输出：将服务端下发的二进制音频分片按顺序拼接到 BrainOutput.AudioData
+// 输出：将服务端下发的二进制音频分片按顺序拼接到 BrainOutput.Content.Audio.Data
 type Text2VoiceBrain struct {
 	config *Config
 	dialer *websocket.Dialer
@@ -86,14 +86,11 @@ type cosyEvent struct {
 
 func (b *Text2VoiceBrain) ProcessInput(input *BrainInput) (*BrainOutput, error) {
 	if input == nil {
-		return &BrainOutput{Success: false, Error: "input is nil"}, fmt.Errorf("input is nil")
+		return brainError("input is nil"), fmt.Errorf("input is nil")
 	}
-	ctx := input.Context
-	if ctx == nil {
-		ctx = context.Background()
-	}
+	ctx := input.ContextOrBackground()
 
-	model := input.Model
+	model := input.Options.Model
 	if model == "" {
 		model = b.config.Model
 	}
@@ -101,10 +98,10 @@ func (b *Text2VoiceBrain) ProcessInput(input *BrainInput) (*BrainOutput, error) 
 		model = "cosyvoice-v3-flash"
 	}
 
-	// 待合成文本：支持 input.Text 或 ExtraParams["texts"]（[]string）批量发送
+	// 待合成文本：支持 input.Prompt 或 Extra["texts"]（[]string）批量发送
 	var texts []string
-	if input.ExtraParams != nil {
-		if v, ok := input.ExtraParams["texts"]; ok {
+	if input.Extra != nil {
+		if v, ok := input.Extra["texts"]; ok {
 			if vs, ok := v.([]string); ok {
 				for _, t := range vs {
 					t = strings.TrimSpace(t)
@@ -125,14 +122,14 @@ func (b *Text2VoiceBrain) ProcessInput(input *BrainInput) (*BrainOutput, error) 
 		}
 	}
 	if len(texts) == 0 {
-		t := strings.TrimSpace(input.Text)
+		t := strings.TrimSpace(input.Prompt)
 		if t == "" {
-			return &BrainOutput{Success: false, Error: "missing text (BrainInput.Text)"}, fmt.Errorf("missing text (BrainInput.Text)")
+			return brainError("missing text (BrainInput.Prompt)"), fmt.Errorf("missing text (BrainInput.Prompt)")
 		}
 		texts = []string{t}
 	}
 
-	// run-task parameters 默认值（可被 ExtraParams 覆盖）
+	// run-task parameters 默认值（可被 Extra 覆盖）
 	params := map[string]any{
 		"text_type":   "PlainText",
 		"voice":       "longanyang",
@@ -143,8 +140,8 @@ func (b *Text2VoiceBrain) ProcessInput(input *BrainInput) (*BrainOutput, error) 
 		"pitch":       1.0,
 		"enable_ssml": false,
 	}
-	if input.ExtraParams != nil {
-		for k, v := range input.ExtraParams {
+	if input.Extra != nil {
+		for k, v := range input.Extra {
 			// texts 是我们自己的批量输入字段，不属于 parameters
 			if k == "texts" {
 				continue
@@ -155,12 +152,12 @@ func (b *Text2VoiceBrain) ProcessInput(input *BrainInput) (*BrainOutput, error) 
 
 	taskID, err := randomHex32()
 	if err != nil {
-		return &BrainOutput{Success: false, Error: err.Error()}, err
+		return brainError(err.Error()), err
 	}
 
 	conn, err := b.dial(ctx)
 	if err != nil {
-		return &BrainOutput{Success: false, Error: err.Error()}, err
+		return brainError(err.Error()), err
 	}
 	defer conn.Close()
 
@@ -208,12 +205,12 @@ func (b *Text2VoiceBrain) ProcessInput(input *BrainInput) (*BrainOutput, error) 
 	run.Payload.Input = map[string]any{}
 
 	if err := conn.WriteJSON(run); err != nil {
-		return &BrainOutput{Success: false, Error: err.Error()}, err
+		return brainError(err.Error()), err
 	}
 
 	// wait task-started
 	if err := b.waitEvent(ctx, events, readErr, "task-started"); err != nil {
-		return &BrainOutput{Success: false, Error: err.Error()}, err
+		return brainError(err.Error()), err
 	}
 
 	// send continue-task(s)
@@ -224,7 +221,7 @@ func (b *Text2VoiceBrain) ProcessInput(input *BrainInput) (*BrainOutput, error) 
 		ct.Header.Streaming = "duplex"
 		ct.Payload.Input.Text = t
 		if err := conn.WriteJSON(ct); err != nil {
-			return &BrainOutput{Success: false, Error: err.Error()}, err
+			return brainError(err.Error()), err
 		}
 	}
 
@@ -235,7 +232,7 @@ func (b *Text2VoiceBrain) ProcessInput(input *BrainInput) (*BrainOutput, error) 
 	fin.Header.Streaming = "duplex"
 	fin.Payload.Input = map[string]any{}
 	if err := conn.WriteJSON(fin); err != nil {
-		return &BrainOutput{Success: false, Error: err.Error()}, err
+		return brainError(err.Error()), err
 	}
 
 	var audio bytes.Buffer
@@ -248,10 +245,10 @@ func (b *Text2VoiceBrain) ProcessInput(input *BrainInput) (*BrainOutput, error) 
 	for {
 		select {
 		case <-ctx.Done():
-			return &BrainOutput{Success: false, Error: ctx.Err().Error(), Metadata: meta}, ctx.Err()
+			return brainErrorWithMetadata(ctx.Err().Error(), meta), ctx.Err()
 		case err := <-readErr:
 			if err != nil {
-				return &BrainOutput{Success: false, Error: err.Error(), Metadata: meta}, err
+				return brainErrorWithMetadata(err.Error(), meta), err
 			}
 		case chunk, ok := <-audioChunks:
 			if ok && len(chunk) > 0 {
@@ -263,7 +260,10 @@ func (b *Text2VoiceBrain) ProcessInput(input *BrainInput) (*BrainOutput, error) 
 				out := audio.Bytes()
 				cp := make([]byte, len(out))
 				copy(cp, out)
-				return &BrainOutput{Success: true, Mode: BrainModeVoiceGenerate, AudioData: cp, Metadata: meta}, nil
+				result := brainSuccess(BrainModeVoiceGenerate)
+				result.Content.Audio.Data = cp
+				result.Metadata = meta
+				return &result, nil
 			}
 			switch ev.Header.Event {
 			case "result-generated":
@@ -283,12 +283,10 @@ func (b *Text2VoiceBrain) ProcessInput(input *BrainInput) (*BrainOutput, error) 
 				out := audio.Bytes()
 				cp := make([]byte, len(out))
 				copy(cp, out)
-				return &BrainOutput{
-					Success:   true,
-					Mode:      BrainModeVoiceGenerate,
-					AudioData: cp,
-					Metadata:  meta,
-				}, nil
+				result := brainSuccess(BrainModeVoiceGenerate)
+				result.Content.Audio.Data = cp
+				result.Metadata = meta
+				return &result, nil
 			case "task-failed":
 				msg := ev.Header.ErrorMessage
 				if msg == "" {
@@ -297,7 +295,7 @@ func (b *Text2VoiceBrain) ProcessInput(input *BrainInput) (*BrainOutput, error) 
 				if ev.Header.ErrorCode != "" {
 					msg = fmt.Sprintf("%s: %s", ev.Header.ErrorCode, msg)
 				}
-				return &BrainOutput{Success: false, Error: msg, Metadata: meta}, fmt.Errorf("%s", msg)
+				return brainErrorWithMetadata(msg, meta), fmt.Errorf("%s", msg)
 			}
 		}
 	}
@@ -337,7 +335,7 @@ func (b *Text2VoiceBrain) dial(ctx context.Context) (*websocket.Conn, error) {
 	h := http.Header{}
 	h.Set("Authorization", fmt.Sprintf("bearer %s", b.config.APIKey))
 	h.Set("User-Agent", "PeopleAgent/1.0")
-	// 如需开启数据合规检测，可在 ExtraParams 里自己加 header 映射；这里保持默认不启用
+	// 如需开启数据合规检测，可在 Extra 里自己加 header 映射；这里保持默认不启用
 	conn, _, err := b.dialer.DialContext(ctx, b.getWSURL(), h)
 	return conn, err
 }

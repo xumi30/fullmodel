@@ -31,34 +31,31 @@ func NewImageBrain(config *QwenConfig) *ImageBrain {
 // ProcessInput 实现 Brain 接口
 func (ib *ImageBrain) ProcessInput(input *BrainInput) (*BrainOutput, error) {
 	if input == nil {
-		return &BrainOutput{Success: false, Error: "input is nil"}, fmt.Errorf("input is nil")
+		return brainError("input is nil"), fmt.Errorf("input is nil")
 	}
 
-	ctx := input.Context
-	if ctx == nil {
-		ctx = context.Background()
-	}
+	ctx := input.ContextOrBackground()
 
 	// 1) 优先使用用户传入的 Messages（允许多轮、多图、多模态自定义）
 	messages := input.Messages
 
-	// 2) 若未传 Messages，则根据 ImageURL/ImageData/VideoURL/VideoData/MultimodalParts/Text 构建一条 user 消息
+	// 2) 若未传 Messages，则根据 Media/Prompt 构建一条 user 消息
 	if len(messages) == 0 {
 		content, err := ib.buildUserContent(input)
 		if err != nil {
-			return &BrainOutput{Success: false, Error: err.Error()}, err
+			return brainError(err.Error()), err
 		}
 		messages = []Message{{Role: "user", Content: content}}
 	}
 
 	req := &ChatCompletionRequest{
-		Model:       input.Model,
+		Model:       input.Options.Model,
 		Messages:    messages,
-		Stream:      input.Stream,
+		Stream:      input.Options.Stream,
 		Tools:       input.Tools,
-		Temperature: input.Temperature,
-		TopP:        input.TopP,
-		MaxTokens:   input.MaxTokens,
+		Temperature: input.Options.Temperature,
+		TopP:        input.Options.TopP,
+		MaxTokens:   input.Options.MaxTokens,
 	}
 
 	if req.Model == "" {
@@ -69,21 +66,21 @@ func (ib *ImageBrain) ProcessInput(input *BrainInput) (*BrainOutput, error) {
 		req.Model = "qwen3.6-plus"
 	}
 
-	// 透传 ExtraParams 到 extra_body（用于 enable_thinking、vl_high_resolution_images、max_pixels 等）
-	if len(input.ExtraParams) > 0 {
-		req.ExtraBody = input.ExtraParams
+	// 透传 Extra 到 extra_body（用于 enable_thinking、vl_high_resolution_images、max_pixels 等）
+	if len(input.Extra) > 0 {
+		req.ExtraBody = input.Extra
 	}
 
-	if input.Stream {
+	if input.Options.Stream {
 		return ib.CreateChatCompletionStream(ctx, *req)
 	}
 
 	resp, err := ib.CreateChatCompletion(ctx, *req)
 	if err != nil {
-		return &BrainOutput{Success: false, Error: err.Error()}, err
+		return brainError(err.Error()), err
 	}
 	if len(resp.Choices) == 0 {
-		return &BrainOutput{Success: false, Error: "no response from model"}, fmt.Errorf("no response from model")
+		return brainError("no response from model"), fmt.Errorf("no response from model")
 	}
 
 	content, ok := resp.Choices[0].Message.Content.(string)
@@ -93,24 +90,20 @@ func (ib *ImageBrain) ProcessInput(input *BrainInput) (*BrainOutput, error) {
 		content = string(raw)
 	}
 
-	return &BrainOutput{
-		Success: true,
-		Mode:    ib.outputMode(input),
-		Text:    content,
-		Messages: []Message{
-			{Role: "assistant", Content: content},
-		},
-		Choices: resp.Choices,
-		Usage: &Usage{
-			PromptTokens:     resp.Usage.PromptTokens,
-			CompletionTokens: resp.Usage.CompletionTokens,
-			TotalTokens:      resp.Usage.TotalTokens,
-		},
-		Metadata: map[string]any{
-			"model": resp.Model,
-			"id":    resp.ID,
-		},
-	}, nil
+	out := brainSuccess(ib.outputMode(input))
+	out.Content.Text = content
+	out.Content.Messages = []Message{{Role: "assistant", Content: content}}
+	out.Choices = resp.Choices
+	out.Usage = &Usage{
+		PromptTokens:     resp.Usage.PromptTokens,
+		CompletionTokens: resp.Usage.CompletionTokens,
+		TotalTokens:      resp.Usage.TotalTokens,
+	}
+	out.Metadata = map[string]any{
+		"model": resp.Model,
+		"id":    resp.ID,
+	}
+	return &out, nil
 }
 
 func (ib *ImageBrain) outputMode(input *BrainInput) BrainMode {
@@ -123,10 +116,10 @@ func (ib *ImageBrain) outputMode(input *BrainInput) BrainMode {
 	}
 
 	// 根据输入推断
-	if input.VideoURL != "" || len(input.VideoData) > 0 {
+	if input.Media.Video.URL != "" || len(input.Media.Video.Data) > 0 {
 		return BrainModeVideoUnderstand
 	}
-	for _, p := range input.MultimodalParts {
+	for _, p := range input.Media.Parts {
 		if p.Type == "video_url" || p.Type == "video" || p.VideoURL != nil || len(p.Video) > 0 || p.VideoData != nil {
 			return BrainModeVideoUnderstand
 		}
@@ -137,8 +130,8 @@ func (ib *ImageBrain) outputMode(input *BrainInput) BrainMode {
 func (ib *ImageBrain) buildUserContent(input *BrainInput) ([]any, error) {
 	var content []any
 
-	// a) MultimodalParts 优先（可以多图）
-	for _, p := range input.MultimodalParts {
+	// a) Media.Parts 优先（可以多图）
+	for _, p := range input.Media.Parts {
 		switch p.Type {
 		case "image_url":
 			if p.ImageURL != nil && p.ImageURL.URL != "" {
@@ -172,7 +165,7 @@ func (ib *ImageBrain) buildUserContent(input *BrainInput) ([]any, error) {
 				}
 				if p.VideoURL.FPS > 0 {
 					item["fps"] = p.VideoURL.FPS
-				} else if fps, ok := extractFPS(input.ExtraParams); ok {
+				} else if fps, ok := extractFPS(input.Extra); ok {
 					item["fps"] = fps
 				}
 				content = append(content, item)
@@ -183,7 +176,7 @@ func (ib *ImageBrain) buildUserContent(input *BrainInput) ([]any, error) {
 					"type":  "video",
 					"video": p.Video,
 				}
-				if fps, ok := extractFPS(input.ExtraParams); ok {
+				if fps, ok := extractFPS(input.Extra); ok {
 					item["fps"] = fps
 				}
 				content = append(content, item)
@@ -197,7 +190,7 @@ func (ib *ImageBrain) buildUserContent(input *BrainInput) ([]any, error) {
 						"url": url,
 					},
 				}
-				if fps, ok := extractFPS(input.ExtraParams); ok {
+				if fps, ok := extractFPS(input.Extra); ok {
 					item["fps"] = fps
 				}
 				content = append(content, item)
@@ -208,18 +201,18 @@ func (ib *ImageBrain) buildUserContent(input *BrainInput) ([]any, error) {
 	}
 
 	// b) 兼容单图 URL
-	if input.ImageURL != "" {
+	if input.Media.Image.URL != "" {
 		content = append(content, map[string]any{
 			"type": "image_url",
 			"image_url": map[string]any{
-				"url": input.ImageURL,
+				"url": input.Media.Image.URL,
 			},
 		})
 	}
 
 	// c) 兼容二进制图像（转 data url）
-	if len(input.ImageData) > 0 {
-		url := ib.buildDataURL("", input.ImageData)
+	if len(input.Media.Image.Data) > 0 {
+		url := ib.buildDataURL(input.Media.Image.MimeType, input.Media.Image.Data)
 		content = append(content, map[string]any{
 			"type": "image_url",
 			"image_url": map[string]any{
@@ -229,29 +222,29 @@ func (ib *ImageBrain) buildUserContent(input *BrainInput) ([]any, error) {
 	}
 
 	// d) 兼容视频 URL
-	if input.VideoURL != "" {
+	if input.Media.Video.URL != "" {
 		item := map[string]any{
 			"type": "video_url",
 			"video_url": map[string]any{
-				"url": input.VideoURL,
+				"url": input.Media.Video.URL,
 			},
 		}
-		if fps, ok := extractFPS(input.ExtraParams); ok {
+		if fps, ok := extractFPS(input.Extra); ok {
 			item["fps"] = fps
 		}
 		content = append(content, item)
 	}
 
 	// e) 兼容视频二进制（转 data url）
-	if len(input.VideoData) > 0 {
-		url := ib.buildDataURL("", input.VideoData)
+	if len(input.Media.Video.Data) > 0 {
+		url := ib.buildDataURL(input.Media.Video.MimeType, input.Media.Video.Data)
 		item := map[string]any{
 			"type": "video_url",
 			"video_url": map[string]any{
 				"url": url,
 			},
 		}
-		if fps, ok := extractFPS(input.ExtraParams); ok {
+		if fps, ok := extractFPS(input.Extra); ok {
 			item["fps"] = fps
 		}
 		content = append(content, item)
@@ -262,7 +255,7 @@ func (ib *ImageBrain) buildUserContent(input *BrainInput) ([]any, error) {
 	}
 
 	// f) 文本提示放最后（若为空，给一个默认提示）
-	text := strings.TrimSpace(input.Text)
+	text := strings.TrimSpace(input.Prompt)
 	if text == "" {
 		if ib.outputMode(input) == BrainModeVideoUnderstand {
 			text = "请描述这段视频的内容，并回答我关于视频的问题。"
@@ -307,7 +300,7 @@ func extractFPS(extra map[string]any) (float64, bool) {
 	if extra == nil {
 		return 0, false
 	}
-	// 允许用户通过 ExtraParams 传 fps（float64/int/string 都尽量兼容）
+	// 允许用户通过 Extra 传 fps（float64/int/string 都尽量兼容）
 	if v, ok := extra["fps"]; ok {
 		switch t := v.(type) {
 		case float64:

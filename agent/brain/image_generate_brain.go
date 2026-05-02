@@ -2,7 +2,6 @@ package brain
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -15,11 +14,12 @@ import (
 //
 // 文档：POST /api/v1/services/aigc/multimodal-generation/generation
 // 请求体：
-// {
-//   "model": "qwen-image-2.0-pro",
-//   "input": {"messages":[{"role":"user","content":[{"text":"...prompt..."}]}]},
-//   "parameters": {...}
-// }
+//
+//	{
+//	  "model": "qwen-image-2.0-pro",
+//	  "input": {"messages":[{"role":"user","content":[{"text":"...prompt..."}]}]},
+//	  "parameters": {...}
+//	}
 //
 // 响应体：output.choices[0].message.content[0].image 为临时URL（24小时有效）
 type ImageGenerateBrain struct {
@@ -38,8 +38,8 @@ func NewImageGenerateBrain(config *QwenConfig) *ImageGenerateBrain {
 
 type qwenImageGenerateRequest struct {
 	Model      string                 `json:"model"`
-	Input      qwenImageGenerateInput  `json:"input"`
-	Parameters map[string]any          `json:"parameters,omitempty"`
+	Input      qwenImageGenerateInput `json:"input"`
+	Parameters map[string]any         `json:"parameters,omitempty"`
 }
 
 type qwenImageGenerateInput struct {
@@ -47,8 +47,8 @@ type qwenImageGenerateInput struct {
 }
 
 type qwenImageGenerateMessage struct {
-	Role    string                   `json:"role"`
-	Content []map[string]any         `json:"content"`
+	Role    string           `json:"role"`
+	Content []map[string]any `json:"content"`
 }
 
 type qwenImageGenerateResponse struct {
@@ -75,20 +75,17 @@ type qwenImageGenerateResponse struct {
 
 func (ig *ImageGenerateBrain) ProcessInput(input *BrainInput) (*BrainOutput, error) {
 	if input == nil {
-		return &BrainOutput{Success: false, Error: "input is nil"}, fmt.Errorf("input is nil")
+		return brainError("input is nil"), fmt.Errorf("input is nil")
 	}
 
-	ctx := input.Context
-	if ctx == nil {
-		ctx = context.Background()
-	}
+	ctx := input.ContextOrBackground()
 
-	prompt := strings.TrimSpace(input.Text)
+	prompt := strings.TrimSpace(input.Prompt)
 	if prompt == "" {
-		return &BrainOutput{Success: false, Error: "missing prompt (BrainInput.Text)"}, fmt.Errorf("missing prompt (BrainInput.Text)")
+		return brainError("missing prompt (BrainInput.Prompt)"), fmt.Errorf("missing prompt (BrainInput.Prompt)")
 	}
 
-	model := input.Model
+	model := input.Options.Model
 	if model == "" {
 		model = ig.config.Model
 	}
@@ -97,12 +94,12 @@ func (ig *ImageGenerateBrain) ProcessInput(input *BrainInput) (*BrainOutput, err
 	}
 
 	parameters := map[string]any(nil)
-	if input.ExtraParams != nil {
-		// 允许调用方直接把 parameters 作为 ExtraParams["parameters"] 传进来
-		if p, ok := input.ExtraParams["parameters"].(map[string]any); ok {
+	if input.Extra != nil {
+		// 允许调用方直接把 parameters 作为 Extra["parameters"] 传进来
+		if p, ok := input.Extra["parameters"].(map[string]any); ok {
 			parameters = p
 		} else {
-			parameters = input.ExtraParams
+			parameters = input.Extra
 		}
 	}
 
@@ -123,12 +120,12 @@ func (ig *ImageGenerateBrain) ProcessInput(input *BrainInput) (*BrainOutput, err
 
 	raw, err := json.Marshal(reqBody)
 	if err != nil {
-		return &BrainOutput{Success: false, Error: err.Error()}, err
+		return brainError(err.Error()), err
 	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", ig.getBaseURL(), bytes.NewReader(raw))
 	if err != nil {
-		return &BrainOutput{Success: false, Error: err.Error()}, err
+		return brainError(err.Error()), err
 	}
 
 	httpReq.Header.Set("Content-Type", "application/json")
@@ -137,29 +134,29 @@ func (ig *ImageGenerateBrain) ProcessInput(input *BrainInput) (*BrainOutput, err
 
 	resp, err := ig.client.Do(httpReq)
 	if err != nil {
-		return &BrainOutput{Success: false, Error: err.Error()}, err
+		return brainError(err.Error()), err
 	}
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
-		return &BrainOutput{Success: false, Error: string(body)}, fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(body))
+		return brainError(string(body)), fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(body))
 	}
 
 	var decoded qwenImageGenerateResponse
 	if err := json.Unmarshal(body, &decoded); err != nil {
-		return &BrainOutput{Success: false, Error: err.Error()}, err
+		return brainError(err.Error()), err
 	}
 	if decoded.Code != "" {
 		msg := decoded.Message
 		if msg == "" {
 			msg = decoded.Code
 		}
-		return &BrainOutput{Success: false, Error: msg, Metadata: map[string]any{"code": decoded.Code, "request_id": decoded.RequestID}}, fmt.Errorf("%s", msg)
+		return brainErrorWithMetadata(msg, map[string]any{"code": decoded.Code, "request_id": decoded.RequestID}), fmt.Errorf("%s", msg)
 	}
 
 	if len(decoded.Output.Choices) == 0 || len(decoded.Output.Choices[0].Message.Content) == 0 {
-		return &BrainOutput{Success: false, Error: "no image in response"}, fmt.Errorf("no image in response")
+		return brainError("no image in response"), fmt.Errorf("no image in response")
 	}
 
 	// content[0] 形如 {"image": "https://...png?..."}
@@ -174,21 +171,19 @@ func (ig *ImageGenerateBrain) ProcessInput(input *BrainInput) (*BrainOutput, err
 		}
 	}
 	if strings.TrimSpace(imageURL) == "" {
-		return &BrainOutput{Success: false, Error: "no image url found in response"}, fmt.Errorf("no image url found in response")
+		return brainError("no image url found in response"), fmt.Errorf("no image url found in response")
 	}
 
-	return &BrainOutput{
-		Success:  true,
-		Mode:     BrainIMageGenerate,
-		ImageURL: imageURL,
-		Metadata: map[string]any{
-			"request_id":  decoded.RequestID,
-			"image_count": decoded.Usage.ImageCount,
-			"width":       decoded.Usage.Width,
-			"height":      decoded.Usage.Height,
-			"model":       model,
-		},
-	}, nil
+	out := brainSuccess(BrainIMageGenerate)
+	out.Content.Image.URL = imageURL
+	out.Metadata = map[string]any{
+		"request_id":  decoded.RequestID,
+		"image_count": decoded.Usage.ImageCount,
+		"width":       decoded.Usage.Width,
+		"height":      decoded.Usage.Height,
+		"model":       model,
+	}
+	return &out, nil
 }
 
 func (ig *ImageGenerateBrain) getBaseURL() string {
@@ -210,4 +205,3 @@ func (ig *ImageGenerateBrain) getBaseURL() string {
 		return "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation"
 	}
 }
-

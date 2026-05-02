@@ -33,7 +33,7 @@ func NewVideoTextGenerateBrain(config *QwenConfig) *VideoTextGenerateBrain {
 }
 
 type happyHorseCreateTaskRequest struct {
-	Model      string               `json:"model"`
+	Model      string                `json:"model"`
 	Input      happyHorseCreateInput `json:"input"`
 	Parameters map[string]any        `json:"parameters,omitempty"`
 }
@@ -74,20 +74,17 @@ type dashscopeTaskResponse struct {
 
 func (vb *VideoTextGenerateBrain) ProcessInput(input *BrainInput) (*BrainOutput, error) {
 	if input == nil {
-		return &BrainOutput{Success: false, Error: "input is nil"}, fmt.Errorf("input is nil")
+		return brainError("input is nil"), fmt.Errorf("input is nil")
 	}
 
-	ctx := input.Context
-	if ctx == nil {
-		ctx = context.Background()
-	}
+	ctx := input.ContextOrBackground()
 
-	prompt := strings.TrimSpace(input.Text)
+	prompt := strings.TrimSpace(input.Prompt)
 	if prompt == "" {
-		return &BrainOutput{Success: false, Error: "missing prompt (BrainInput.Text)"}, fmt.Errorf("missing prompt (BrainInput.Text)")
+		return brainError("missing prompt (BrainInput.Prompt)"), fmt.Errorf("missing prompt (BrainInput.Prompt)")
 	}
 
-	model := input.Model
+	model := input.Options.Model
 	if model == "" {
 		model = vb.config.Model
 	}
@@ -96,12 +93,12 @@ func (vb *VideoTextGenerateBrain) ProcessInput(input *BrainInput) (*BrainOutput,
 	}
 
 	parameters := map[string]any(nil)
-	if input.ExtraParams != nil {
-		// 允许用户把 parameters 作为 ExtraParams["parameters"] 传入
-		if p, ok := input.ExtraParams["parameters"].(map[string]any); ok {
+	if input.Extra != nil {
+		// 允许用户把 parameters 作为 Extra["parameters"] 传入
+		if p, ok := input.Extra["parameters"].(map[string]any); ok {
 			parameters = p
 		} else {
-			parameters = input.ExtraParams
+			parameters = input.Extra
 		}
 	}
 
@@ -133,7 +130,7 @@ func (vb *VideoTextGenerateBrain) ProcessInput(input *BrainInput) (*BrainOutput,
 	// Step 1: create task
 	taskID, requestID, err := vb.createTask(ctx, model, prompt, parameters)
 	if err != nil {
-		return &BrainOutput{Success: false, Error: err.Error(), Metadata: map[string]any{"request_id": requestID}}, err
+		return brainErrorWithMetadata(err.Error(), map[string]any{"request_id": requestID}), err
 	}
 
 	// Step 2: poll task
@@ -144,19 +141,17 @@ func (vb *VideoTextGenerateBrain) ProcessInput(input *BrainInput) (*BrainOutput,
 		}
 		meta["task_id"] = taskID
 		meta["create_request_id"] = requestID
-		return &BrainOutput{Success: false, Error: err.Error(), Metadata: meta}, err
+		return brainErrorWithMetadata(err.Error(), meta), err
 	}
 
 	meta["task_id"] = taskID
 	meta["create_request_id"] = requestID
 	meta["model"] = model
 
-	return &BrainOutput{
-		Success:  true,
-		Mode:     BrainText2VideoGenerate,
-		VideoURL: videoURL,
-		Metadata: meta,
-	}, nil
+	out := brainSuccess(BrainText2VideoGenerate)
+	out.Content.Video.URL = videoURL
+	out.Metadata = meta
+	return &out, nil
 }
 
 func (vb *VideoTextGenerateBrain) createTask(ctx context.Context, model, prompt string, parameters map[string]any) (taskID string, requestID string, err error) {

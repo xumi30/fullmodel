@@ -34,9 +34,9 @@ func NewImage2VideoGenerateBrain(config *QwenConfig) *Image2VideoGenerateBrain {
 }
 
 type happyHorseI2VCreateTaskRequest struct {
-	Model      string                `json:"model"`
-	Input      happyHorseI2VInput     `json:"input"`
-	Parameters map[string]any         `json:"parameters,omitempty"`
+	Model      string             `json:"model"`
+	Input      happyHorseI2VInput `json:"input"`
+	Parameters map[string]any     `json:"parameters,omitempty"`
 }
 
 type happyHorseI2VInput struct {
@@ -81,20 +81,17 @@ type happyHorseTaskResponse struct {
 
 func (b *Image2VideoGenerateBrain) ProcessInput(input *BrainInput) (*BrainOutput, error) {
 	if input == nil {
-		return &BrainOutput{Success: false, Error: "input is nil"}, fmt.Errorf("input is nil")
+		return brainError("input is nil"), fmt.Errorf("input is nil")
 	}
 
-	ctx := input.Context
-	if ctx == nil {
-		ctx = context.Background()
-	}
+	ctx := input.ContextOrBackground()
 
 	firstFrameURL, err := b.extractFirstFrameURL(input)
 	if err != nil {
-		return &BrainOutput{Success: false, Error: err.Error()}, err
+		return brainError(err.Error()), err
 	}
 
-	model := input.Model
+	model := input.Options.Model
 	if model == "" {
 		model = b.config.Model
 	}
@@ -103,11 +100,11 @@ func (b *Image2VideoGenerateBrain) ProcessInput(input *BrainInput) (*BrainOutput
 	}
 
 	parameters := map[string]any(nil)
-	if input.ExtraParams != nil {
-		if p, ok := input.ExtraParams["parameters"].(map[string]any); ok {
+	if input.Extra != nil {
+		if p, ok := input.Extra["parameters"].(map[string]any); ok {
 			parameters = p
 		} else {
-			parameters = input.ExtraParams
+			parameters = input.Extra
 		}
 	}
 
@@ -135,11 +132,11 @@ func (b *Image2VideoGenerateBrain) ProcessInput(input *BrainInput) (*BrainOutput
 		}
 	}
 
-	prompt := strings.TrimSpace(input.Text) // 可选
+	prompt := strings.TrimSpace(input.Prompt) // 可选
 
 	taskID, requestID, err := b.createTask(ctx, model, prompt, firstFrameURL, parameters)
 	if err != nil {
-		return &BrainOutput{Success: false, Error: err.Error(), Metadata: map[string]any{"request_id": requestID}}, err
+		return brainErrorWithMetadata(err.Error(), map[string]any{"request_id": requestID}), err
 	}
 
 	videoURL, meta, err := b.pollTask(ctx, taskID, pollInterval)
@@ -149,30 +146,28 @@ func (b *Image2VideoGenerateBrain) ProcessInput(input *BrainInput) (*BrainOutput
 		}
 		meta["task_id"] = taskID
 		meta["create_request_id"] = requestID
-		return &BrainOutput{Success: false, Error: err.Error(), Metadata: meta}, err
+		return brainErrorWithMetadata(err.Error(), meta), err
 	}
 
 	meta["task_id"] = taskID
 	meta["create_request_id"] = requestID
 	meta["model"] = model
 
-	return &BrainOutput{
-		Success:  true,
-		Mode:     BrainImage2VideoGenerate,
-		VideoURL: videoURL,
-		Metadata: meta,
-	}, nil
+	out := brainSuccess(BrainImage2VideoGenerate)
+	out.Content.Video.URL = videoURL
+	out.Metadata = meta
+	return &out, nil
 }
 
 func (b *Image2VideoGenerateBrain) extractFirstFrameURL(input *BrainInput) (string, error) {
-	if strings.TrimSpace(input.ImageURL) != "" {
-		return input.ImageURL, nil
+	if strings.TrimSpace(input.Media.Image.URL) != "" {
+		return input.Media.Image.URL, nil
 	}
-	if len(input.ImageData) > 0 {
-		return buildDataURL("", input.ImageData), nil
+	if len(input.Media.Image.Data) > 0 {
+		return buildDataURL(input.Media.Image.MimeType, input.Media.Image.Data), nil
 	}
 
-	for _, p := range input.MultimodalParts {
+	for _, p := range input.Media.Parts {
 		switch p.Type {
 		case "image_url":
 			if p.ImageURL != nil && strings.TrimSpace(p.ImageURL.URL) != "" {
@@ -185,7 +180,7 @@ func (b *Image2VideoGenerateBrain) extractFirstFrameURL(input *BrainInput) (stri
 		}
 	}
 
-	return "", fmt.Errorf("missing first frame image (need BrainInput.ImageURL/ImageData or multimodal_parts image_url/image_data)")
+	return "", fmt.Errorf("missing first frame image (need BrainInput.Media.Image or media.parts image_url/image_data)")
 }
 
 func (b *Image2VideoGenerateBrain) createTask(ctx context.Context, model, prompt, firstFrameURL string, parameters map[string]any) (taskID string, requestID string, err error) {

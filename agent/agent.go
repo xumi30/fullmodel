@@ -31,8 +31,10 @@ func (a *Agent) BrainProcess(isStream bool) (output *brain.BrainOutput, err erro
 		Context:  context.Background(),
 		Mode:     brain.BrainModeText,
 		Messages: a.whatHappened,
-		Stream:   isStream,
 		Tools:    a.tools,
+		Options: brain.BrainOptions{
+			Stream: isStream,
+		},
 	}
 
 	result, err := a.brain.ProcessInput(req)
