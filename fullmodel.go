@@ -8,6 +8,7 @@ import (
 	"github.com/xumi30/fullmodel/agent/brain"
 	agentruntime "github.com/xumi30/fullmodel/agent/runtime"
 	agenttools "github.com/xumi30/fullmodel/agent/tools"
+	"github.com/xumi30/fullmodel/agent/tools/builtins"
 	"github.com/xumi30/fullmodel/processmessage"
 	"github.com/xumi30/fullmodel/utils/fileop"
 )
@@ -57,6 +58,7 @@ func Open(opts ...Option) (*Client, error) {
 			return nil, err
 		}
 	}
+	builtins.Register(agenttools.Getregistry())
 
 	registry, err := agentruntime.NewRegistryFromConfigs(cfgs)
 	if err != nil {
@@ -166,6 +168,10 @@ func (c *Client) Capabilities() []agentruntime.Capability {
 		return nil
 	}
 	return c.runner.Registry().Capabilities()
+}
+
+func (c *Client) Tools() []brain.Tool {
+	return agenttools.Getregistry().ConvertTools()
 }
 
 func (c *Client) attachSession(message processmessage.Message, sessionID string) processmessage.Message {

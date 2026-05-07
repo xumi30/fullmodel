@@ -21,6 +21,15 @@ func TestOpenWithConfigs(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, client)
 	require.NotEmpty(t, client.Capabilities())
+	require.NotEmpty(t, client.Tools())
+	var hasBaidu bool
+	for _, tool := range client.Tools() {
+		if tool.Function.Name == "baidu_search" {
+			hasBaidu = true
+			break
+		}
+	}
+	require.True(t, hasBaidu)
 }
 
 func TestRunNilClient(t *testing.T) {

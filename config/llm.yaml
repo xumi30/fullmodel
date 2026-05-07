@@ -5,13 +5,13 @@ defaults:
 
 profiles:
   qwen:
-    api_key: ${DASHSCOPE_API_KEY}
+    api_key: sk-dfac621ea7044aa4886a9135cc0774ba
     provider: qwen
     region: cn-beijing
 
 brains:
   text:
-    model: qwen-plus
+    model: qwen3.6-plus
 
   vision:
     model: qwen-vl-plus
