@@ -71,7 +71,54 @@ export DASHSCOPE_API_KEY="your-api-key"
 
 `profiles` 放供应商/API Key/BaseURL 这类通用配置，`brains.<name>` 只写每个能力自己的差异。
 
-### 2. 在 Go 应用里嵌入
+### 2. 日志与排查
+
+FullModel 默认会把运行日志写到：
+
+```bash
+logs/default.log
+```
+
+实时查看：
+
+```bash
+tail -f logs/default.log
+```
+
+流式请求重点看这些日志：
+
+```text
+sdk StreamText stream ready ...
+chat stream create ... tools=0
+chat stream response status=200 ...
+chat stream emitted text ...
+chat stream done ... text_chunks=...
+stream complete final_error=<nil>
+```
+
+Tool Loop 重点看：
+
+```text
+[llm.request] nonstream ... tools=1
+[llm.response] nonstream decoded ... contentRunes=0
+[llm.request] nonstream ... messages=3 tools=1
+```
+
+`contentRunes=0` 通常表示模型第一轮返回的是 tool call，runtime 会执行工具并发起第二轮请求生成最终回答。
+
+SDK 接口真实检查示例：
+
+```bash
+go run ./examples/sdk_interfaces
+```
+
+默认会真实调用文本、流式、会话记忆和 Tool Loop，并在终端输出 `[PASS]`。如果还想跑 TTS、图像生成、视频生成：
+
+```bash
+FULLMODEL_EXAMPLE_MEDIA=1 go run ./examples/sdk_interfaces
+```
+
+### 3. 在 Go 应用里嵌入
 
 ```go
 package main
@@ -180,7 +227,7 @@ store, err := agentruntime.NewFileSessionStore("./data/sessions")
 client, err := fullmodel.Open(fullmodel.WithSessionMemory(store))
 ```
 
-### 3. 开放 HTTP API
+### 4. 开放 HTTP API
 
 直接启动内置服务：
 

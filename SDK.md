@@ -148,6 +148,8 @@ type StreamOutput interface {
 }
 ```
 
+`StreamText` 默认不带 runtime 默认工具，适合“只要文本分片”的场景。需要工具调用时，使用非流式 `Text`/`Chat` 的 Tool Loop，或显式传入自己的 `processmessage.Options.Tools` 后自行消费 `stream.ToolCalls()`。
+
 ## 记忆管理
 
 默认 `client.Chat(ctx, sessionID, text)` 会自动读取 session 历史，并把用户输入和助手回复写回。
@@ -271,6 +273,50 @@ type ToolExecutor interface {
 client, err := fullmodel.Open(
 	fullmodel.WithToolExecutor(myExecutor),
 )
+```
+
+## 日志与验证
+
+默认日志文件：
+
+```bash
+logs/default.log
+```
+
+实时查看：
+
+```bash
+tail -f logs/default.log
+```
+
+流式文本符合预期时，会看到：
+
+```text
+sdk StreamText stream ready ...
+chat stream create ... tools=0
+chat stream emitted text ...
+chat stream done ... text_chunks=...
+stream complete final_error=<nil>
+```
+
+Tool Loop 符合预期时，会看到第一轮带工具，第二轮带 tool message 回灌：
+
+```text
+[llm.request] nonstream ... tools=1
+[llm.response] nonstream decoded ... contentRunes=0
+[llm.request] nonstream ... messages=3 tools=1
+```
+
+可以直接跑真实 SDK 示例验证：
+
+```bash
+go run ./examples/sdk_interfaces
+```
+
+默认会覆盖 `Text`、`Run`、`StreamText`、`TextStream`、`Chat`、`Memory`、`ToolLoop`、`ExecuteTool`。媒体和生成能力默认不跑，需要显式开启：
+
+```bash
+FULLMODEL_EXAMPLE_MEDIA=1 go run ./examples/sdk_interfaces
 ```
 
 ## 多模态理解
@@ -402,4 +448,3 @@ fullmodel.NewToolSet(tools...) *ToolSet
 fullmodel.DecodeToolArguments(arguments, &v) error
 fullmodel.ObjectSchema(properties, required...) map[string]any
 ```
-
