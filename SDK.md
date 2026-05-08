@@ -589,3 +589,44 @@ fullmodel.NewToolSet(tools...) *ToolSet
 fullmodel.DecodeToolArguments(arguments, &v) error
 fullmodel.ObjectSchema(properties, required...) map[string]any
 ```
+## 简单封装
+```
+package agent
+
+import (
+	"context"
+
+	"github.com/xumi30/fullmodel"
+	"github.com/xumi30/fullmodel/agent/brain"
+)
+
+type Agent struct {
+	SessionID    string
+	SystemPrompt string
+	client       *fullmodel.Client
+}
+
+func NewAgent(sessionID, systemPrompt string) *Agent {
+	client, err := fullmodel.Open()
+	if err != nil {
+		panic(err)
+	}
+	memory := client.Memory()
+	memory.RememberSystem(sessionID, systemPrompt)
+
+	return &Agent{
+		SessionID:    sessionID,
+		SystemPrompt: systemPrompt,
+		client:       client,
+	}
+}
+
+func (a *Agent) Chat(ctx context.Context, userPrompt string) (string, error) {
+	return a.client.Chat(ctx, a.SessionID, userPrompt)
+}
+
+func (a *Agent) StreamChat(ctx context.Context, userPrompt string) (brain.StreamOutput, error) {
+	return a.client.StreamChat(ctx, a.SessionID, userPrompt)
+}
+
+```
