@@ -49,6 +49,8 @@ type Options struct {
 	Model   string
 	Stream  bool
 
+	// DisableDefaultTools prevents the runtime from injecting the client's
+	// default tool executor when Options.Tools is empty.
 	DisableDefaultTools bool
 
 	Temperature *float64
@@ -195,6 +197,22 @@ func (SpeechToTextMessage) MessageKind() Kind { return KindSpeechToText }
 // TextToSpeechMessage 表示文本转语音请求。
 type TextToSpeechMessage struct {
 	Text string
+	// Voice is the provider-specific TTS voice ID, such as longxiaochun_v3.
+	Voice string
+	// Format is the output audio format, such as mp3, wav, or pcm.
+	Format string
+	// SampleRate is the output sample rate in Hz.
+	SampleRate int
+	// Volume controls synthesis volume when supported by the provider.
+	Volume int
+	// Rate controls speaking speed when supported by the provider.
+	Rate float64
+	// Pitch controls voice pitch when supported by the provider.
+	Pitch float64
+	// EnableSSML tells the provider to treat Text as SSML when supported.
+	EnableSSML *bool
+	// Extra carries provider-specific TTS parameters not modeled above.
+	Extra map[string]any
 }
 
 func (TextToSpeechMessage) MessageKind() Kind { return KindTextToSpeech }
@@ -325,6 +343,31 @@ func applySpeechToTextMessage(input *brain.BrainInput, message SpeechToTextMessa
 
 func applyTextToSpeechMessage(input *brain.BrainInput, message TextToSpeechMessage) {
 	input.Prompt = message.Text
+	extra := cloneExtra(message.Extra)
+	if strings.TrimSpace(message.Voice) != "" {
+		extra["voice"] = strings.TrimSpace(message.Voice)
+	}
+	if strings.TrimSpace(message.Format) != "" {
+		extra["format"] = strings.TrimSpace(message.Format)
+	}
+	if message.SampleRate > 0 {
+		extra["sample_rate"] = message.SampleRate
+	}
+	if message.Volume > 0 {
+		extra["volume"] = message.Volume
+	}
+	if message.Rate != 0 {
+		extra["rate"] = message.Rate
+	}
+	if message.Pitch != 0 {
+		extra["pitch"] = message.Pitch
+	}
+	if message.EnableSSML != nil {
+		extra["enable_ssml"] = *message.EnableSSML
+	}
+	if len(extra) > 0 {
+		input.Extra = extra
+	}
 }
 
 func applyImageGenerateMessage(input *brain.BrainInput, message ImageGenerateMessage) {
@@ -403,6 +446,14 @@ func validateInput(input *brain.BrainInput, kind Kind) error {
 
 func hasMedia(resource brain.MediaResource) bool {
 	return strings.TrimSpace(resource.URL) != "" || len(resource.Data) > 0
+}
+
+func cloneExtra(extra map[string]any) map[string]any {
+	out := make(map[string]any, len(extra))
+	for key, value := range extra {
+		out[key] = value
+	}
+	return out
 }
 
 func imageContentPart(resource brain.MediaResource) brain.ContentPart {

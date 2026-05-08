@@ -228,6 +228,25 @@ func TestClientToolsUsesConfiguredExecutor(t *testing.T) {
 	require.Equal(t, "pong", result)
 }
 
+func TestTTSRunOptions(t *testing.T) {
+	runOpts := runOptions{}
+	WithTTSVoice("longxiaochun")(&runOpts)
+	WithTTSFormat("wav")(&runOpts)
+	WithTTSSampleRate(48000)(&runOpts)
+	WithTTSVolume(80)(&runOpts)
+	WithTTSRate(1.2)(&runOpts)
+	WithTTSPitch(0.9)(&runOpts)
+	WithTTSSSML(true)(&runOpts)
+
+	require.Equal(t, "longxiaochun", runOpts.options.Extra["voice"])
+	require.Equal(t, "wav", runOpts.options.Extra["format"])
+	require.Equal(t, 48000, runOpts.options.Extra["sample_rate"])
+	require.Equal(t, 80, runOpts.options.Extra["volume"])
+	require.Equal(t, 1.2, runOpts.options.Extra["rate"])
+	require.Equal(t, 0.9, runOpts.options.Extra["pitch"])
+	require.Equal(t, true, runOpts.options.Extra["enable_ssml"])
+}
+
 func fakeRunner(t *testing.T, kind processmessage.Kind, output *brain.BrainOutput) *agentruntime.Runner {
 	t.Helper()
 	registry := agentruntime.NewRegistry()

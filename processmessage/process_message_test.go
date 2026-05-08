@@ -51,6 +51,37 @@ func TestBuildInputSpeechToTextRequiresAudioData(t *testing.T) {
 	require.Contains(t, err.Error(), "audio data")
 }
 
+func TestBuildInputTextToSpeechOptions(t *testing.T) {
+	processor := NewProcessor(nil)
+	enableSSML := true
+
+	input, err := processor.BuildInput(TextToSpeechMessage{
+		Text:       "hello",
+		Voice:      "longxiaochun",
+		Format:     "wav",
+		SampleRate: 48000,
+		Volume:     80,
+		Rate:       1.2,
+		Pitch:      0.9,
+		EnableSSML: &enableSSML,
+		Extra: map[string]any{
+			"text_type": "PlainText",
+		},
+	}, Options{})
+
+	require.NoError(t, err)
+	require.Equal(t, brain.BrainModeVoiceGenerate, input.Mode)
+	require.Equal(t, "hello", input.Prompt)
+	require.Equal(t, "longxiaochun", input.Extra["voice"])
+	require.Equal(t, "wav", input.Extra["format"])
+	require.Equal(t, 48000, input.Extra["sample_rate"])
+	require.Equal(t, 80, input.Extra["volume"])
+	require.Equal(t, 1.2, input.Extra["rate"])
+	require.Equal(t, 0.9, input.Extra["pitch"])
+	require.Equal(t, true, input.Extra["enable_ssml"])
+	require.Equal(t, "PlainText", input.Extra["text_type"])
+}
+
 func TestBuildInputImageEditAddsExtraImagesAsParts(t *testing.T) {
 	processor := NewProcessor(nil)
 

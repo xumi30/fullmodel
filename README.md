@@ -151,6 +151,40 @@ go run ./examples/sdk_interfaces
 FULLMODEL_EXAMPLE_MEDIA=1 go run ./examples/sdk_interfaces
 ```
 
+TTS 音色由模型决定，不能把不同模型版本的音色混用。当前示例配置使用 `cosyvoice-v3-flash`，应选择 v3/flash 支持的音色，例如：
+
+```text
+longanyang        龙安洋，阳光大男孩，普通话/英文
+longanhuan        龙安欢，欢脱元气女，普通话/英文
+longhuhu_v3       龙呼呼，女童声
+longpaopao_v3     龙泡泡，儿童/故事机
+longjielidou_v3   龙杰力豆，男童声
+longxian_v3       龙仙，豪放可爱女
+longling_v3       龙铃，稚气女声
+longshanshan_v3   龙闪闪，戏剧化童声
+longniuniu_v3     龙牛牛，男童声
+longjiaxin_v3     粤语女
+longjiayi_v3      粤语女
+longanyue_v3      粤语男
+longlaotie_v3     东北话男
+longshange_v3     陕北男
+longanmin_v3      闽南话女
+loongkyong_v3     韩语女
+loongriko_v3      日语女
+loongtomoka_v3    日语女
+longfei_v3        诗词朗诵/磁性男
+longyingxiao_v3   电话销售女
+longyingxun_v3    客服男
+longyingjing_v3   冷静女
+longyingling_v3   共情女
+longyingtao_v3    温柔女
+longxiaochun_v3   知性积极女
+longxiaoxia_v3    沉稳权威女
+longyumi_v3       YUMI，年轻女声
+```
+
+完整列表以阿里云官方文档为准：[CosyVoice 音色列表](https://www.alibabacloud.com/help/zh/model-studio/cosyvoice-voice-list)。
+
 ### 3. 在 Go 应用里嵌入
 
 ```go
@@ -201,6 +235,11 @@ audio := fullmodel.MustMediaFromFile("./hello.wav")
 transcript, err := client.ASR(ctx, audio)
 
 speech, err := client.TTS(ctx, "你好，欢迎使用 FullModel")
+speech, err = client.TTS(ctx, "你好，欢迎使用 FullModel",
+	fullmodel.WithTTSVoice("longxiaochun_v3"),
+	fullmodel.WithTTSFormat("mp3"),
+	fullmodel.WithTTSSampleRate(22050),
+)
 imageURL, err := client.GenerateImage(ctx, "一张极简风格的产品海报")
 videoURL, err := client.TextToVideo(ctx, "一只小机器人在工作台上整理工具")
 ```
@@ -664,36 +703,45 @@ import (
 	"log"
 
 	"github.com/xumi30/fullmodel"
-	"github.com/xumi30/fullmodel/processmessage"
+	"github.com/xumi30/fullmodel/agent/brain"
 )
 
 func main() {
 	ctx := context.Background()
 
-	// 1) 打开客户端（默认读 config/llm.yaml）
 	client, err := fullmodel.Open()
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	// 2) 第一次对话：带 system prompt + 会话 ID
-	r1, err := client.Run(ctx, processmessage.TextMessage{
-		System: "你是一个资深 Go 助手。回答要简洁、结构化，优先给可执行步骤。",
-		Text:   "我想做一个带重试的 HTTP 客户端，先给设计思路。",
-	}, fullmodel.WithSession("demo-session-1"))
-	if err != nil {
-		log.Fatal(err)
-	}
-	fmt.Println("assistant #1:", r1.Output.Content.Text)
+	app := NewAssistant(client, "demo-session-1", `你是一个资深 Go 助手。回答要简洁、结构化，优先给可执行步骤。`)
 
-	// 3) 第二次对话：同一个 session，继续上下文
-	r2, err := client.Run(ctx, processmessage.TextMessage{
-		System: "继续保持上面的回答风格。",
-		Text:   "给我一个最小可运行的代码骨架。",
-	}, fullmodel.WithSession("demo-session-1"))
+	mustAsk(ctx, app, "我想做一个带重试的 HTTP 客户端，先给设计思路。")
+	mustAsk(ctx, app, "给我一个最小可运行的代码骨架。")
+}
+
+type Assistant struct {
+	client    *fullmodel.Client
+	sessionID string
+}
+
+func NewAssistant(client *fullmodel.Client, sessionID, systemPrompt string) *Assistant {
+	client.Memory().Replace(sessionID, []brain.Message{
+		brain.NewSystemMessage(systemPrompt),
+	})
+	return &Assistant{client: client, sessionID: sessionID}
+}
+
+func (a *Assistant) Ask(ctx context.Context, userPrompt string) (string, error) {
+	return a.client.Chat(ctx, a.sessionID, userPrompt)
+}
+
+func mustAsk(ctx context.Context, app *Assistant, userPrompt string) {
+	reply, err := app.Ask(ctx, userPrompt)
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Println("assistant #2:", r2.Output.Content.Text)
+	fmt.Println("user:", userPrompt)
+	fmt.Println("assistant:", reply)
 }
 ```

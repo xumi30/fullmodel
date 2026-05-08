@@ -395,6 +395,65 @@ text, err := client.ASR(ctx, audio)
 audioBytes, err := client.TTS(ctx, "你好，欢迎使用 FullModel")
 ```
 
+指定音色和音频参数：
+
+```go
+audioBytes, err := client.TTS(ctx, "你好，欢迎使用 FullModel",
+	fullmodel.WithTTSVoice("longxiaochun_v3"),
+	fullmodel.WithTTSFormat("mp3"),
+	fullmodel.WithTTSSampleRate(22050),
+	fullmodel.WithTTSVolume(50),
+	fullmodel.WithTTSRate(1.0),
+	fullmodel.WithTTSPitch(1.0),
+)
+```
+
+当前默认音色是 `longanyang`。TTS 音色由模型决定，不能把不同模型版本的音色混用；当前示例配置使用 `cosyvoice-v3-flash`，应选择 v3/flash 支持的音色，例如：
+
+```text
+longanyang        龙安洋，阳光大男孩，普通话/英文
+longanhuan        龙安欢，欢脱元气女，普通话/英文
+longhuhu_v3       龙呼呼，女童声
+longpaopao_v3     龙泡泡，儿童/故事机
+longjielidou_v3   龙杰力豆，男童声
+longxian_v3       龙仙，豪放可爱女
+longling_v3       龙铃，稚气女声
+longshanshan_v3   龙闪闪，戏剧化童声
+longniuniu_v3     龙牛牛，男童声
+longjiaxin_v3     粤语女
+longjiayi_v3      粤语女
+longanyue_v3      粤语男
+longlaotie_v3     东北话男
+longshange_v3     陕北男
+longanmin_v3      闽南话女
+loongkyong_v3     韩语女
+loongriko_v3      日语女
+loongtomoka_v3    日语女
+longfei_v3        诗词朗诵/磁性男
+longyingxiao_v3   电话销售女
+longyingxun_v3    客服男
+longyingjing_v3   冷静女
+longyingling_v3   共情女
+longyingtao_v3    温柔女
+longxiaochun_v3   知性积极女
+longxiaoxia_v3    沉稳权威女
+longyumi_v3       YUMI，年轻女声
+```
+
+完整列表以阿里云官方文档为准：[CosyVoice 音色列表](https://www.alibabacloud.com/help/zh/model-studio/cosyvoice-voice-list)。
+
+底层 CosyVoice 参数会透传，常用项包括：
+
+```go
+fullmodel.WithTTSVoice("longxiaochun_v3")
+fullmodel.WithTTSFormat("mp3")
+fullmodel.WithTTSSampleRate(22050)
+fullmodel.WithTTSVolume(50)
+fullmodel.WithTTSRate(1.0)
+fullmodel.WithTTSPitch(1.0)
+fullmodel.WithTTSSSML(false)
+```
+
 ## 生成能力
 
 文生图：
@@ -469,6 +528,14 @@ client.TextToVideo(ctx, prompt, opts...) (string, error)
 client.ImageToVideo(ctx, firstFrame, prompt, opts...) (string, error)
 client.ASR(ctx, audio, opts...) (string, error)
 client.TTS(ctx, text, opts...) ([]byte, error)
+
+fullmodel.WithTTSVoice(voice)
+fullmodel.WithTTSFormat(format)
+fullmodel.WithTTSSampleRate(sampleRate)
+fullmodel.WithTTSVolume(volume)
+fullmodel.WithTTSRate(rate)
+fullmodel.WithTTSPitch(pitch)
+fullmodel.WithTTSSSML(enabled)
 
 client.Memory() *fullmodel.Memory
 client.ClearSession(sessionID)
