@@ -29,17 +29,23 @@ func (tb *TextBrain) ProcessInput(input *BrainInput) (*BrainOutput, error) {
 		return brainError("input is nil"), fmt.Errorf("input is nil")
 	}
 
-	// 将 BrainInput 转换为 ChatCompletionRequest
 	req := &ChatCompletionRequest{
-		Model:    input.Options.Model,
-		Messages: input.Messages,
-		Stream:   input.Options.Stream,
-		Tools:    input.Tools,
+		Model:       input.Options.Model,
+		Messages:    input.Messages,
+		Stream:      input.Options.Stream,
+		Tools:       input.Tools,
+		Temperature: input.Options.Temperature,
+		TopP:        input.Options.TopP,
+		MaxTokens:   input.Options.MaxTokens,
 	}
 
-	// 如果传入的请求没有模型信息，使用配置中的模型
 	if req.Model == "" {
 		req.Model = tb.config.Model
+	}
+
+	// 透传 Extra 到 extra_body / 顶层扩展字段：enable_thinking、thinking_budget、enable_search 等
+	if len(input.Extra) > 0 {
+		req.ExtraBody = input.Extra
 	}
 
 	// 调用千问模型
