@@ -56,6 +56,19 @@ type ToolSet struct {
 	tools map[string]SDKTool
 }
 
+type memoryStream struct {
+	brain.StreamOutput
+	textCh    chan string
+	waitOnce  sync.Once
+	waitErr   error
+	cancel    context.CancelFunc
+	userText  string
+	sessionID string
+	memory    *Memory
+	collected strings.Builder
+	done      chan struct{}
+}
+
 // Option configures a Client during Open.
 type Option func(*clientOptions)
 
@@ -271,6 +284,8 @@ func (c *Client) Text(ctx context.Context, text string, opts ...RunOption) (stri
 // It does not collect chunks for you; consume stream.Text and then call Wait.
 // Runtime default tools are disabled by default so plain text streaming cannot
 // be intercepted by a model tool call.
+// If WithSession is supplied, the user prompt is remembered immediately; callers
+// must remember the assistant response themselves or use StreamChat.
 func (c *Client) StreamText(ctx context.Context, text string, opts ...RunOption) (brain.StreamOutput, error) {
 	logging.Info("sdk StreamText start text_len=%d opts=%d", len(text), len(opts))
 	opts = append(opts, WithStream(true), WithRuntimeTools(false))
@@ -307,6 +322,21 @@ func (c *Client) TextStream(ctx context.Context, text string, opts ...RunOption)
 func (c *Client) Chat(ctx context.Context, sessionID, text string, opts ...RunOption) (string, error) {
 	opts = append(opts, WithSession(sessionID))
 	return c.Text(ctx, text, opts...)
+}
+
+// StreamChat sends text in a named session and returns a streaming output.
+// It automatically remembers both the user prompt and the complete assistant
+// response after the stream finishes successfully.
+func (c *Client) StreamChat(ctx context.Context, sessionID, text string, opts ...RunOption) (brain.StreamOutput, error) {
+	opts = append(opts, WithSession(sessionID))
+	stream, err := c.StreamText(ctx, text, opts...)
+	if err != nil {
+		return nil, err
+	}
+	if stream == nil || strings.TrimSpace(sessionID) == "" {
+		return stream, nil
+	}
+	return newMemoryStream(stream, c.Memory(), sessionID, text), nil
 }
 
 // ClearSession deletes all remembered messages for a session.
@@ -488,6 +518,75 @@ func (m *Memory) RememberSystem(sessionID, text string) {
 		return
 	}
 	m.Append(sessionID, brain.NewSystemMessage(text))
+}
+
+func newMemoryStream(stream brain.StreamOutput, memory *Memory, sessionID, userText string) *memoryStream {
+	ctx, cancel := context.WithCancel(context.Background())
+	out := &memoryStream{
+		StreamOutput: stream,
+		textCh:       make(chan string),
+		cancel:       cancel,
+		memory:       memory,
+		sessionID:    sessionID,
+		userText:     userText,
+		done:         make(chan struct{}),
+	}
+	go out.forwardText(ctx)
+	return out
+}
+
+func (s *memoryStream) Text() <-chan string {
+	if s == nil {
+		return nil
+	}
+	return s.textCh
+}
+
+func (s *memoryStream) Cancel() {
+	if s == nil {
+		return
+	}
+	s.cancel()
+	s.StreamOutput.Cancel()
+}
+
+func (s *memoryStream) Wait() error {
+	if s == nil {
+		return nil
+	}
+	s.waitOnce.Do(func() {
+		<-s.done
+		s.waitErr = s.StreamOutput.Wait()
+		if s.waitErr == nil {
+			s.rememberAssistant()
+		}
+	})
+	return s.waitErr
+}
+
+func (s *memoryStream) forwardText(ctx context.Context) {
+	defer close(s.textCh)
+	defer close(s.done)
+
+	for chunk := range s.StreamOutput.Text() {
+		s.collected.WriteString(chunk)
+		select {
+		case <-ctx.Done():
+			return
+		case s.textCh <- chunk:
+		}
+	}
+}
+
+func (s *memoryStream) rememberAssistant() {
+	if s == nil || s.memory == nil {
+		return
+	}
+	text := s.collected.String()
+	if strings.TrimSpace(text) == "" {
+		return
+	}
+	s.memory.RememberAssistant(s.sessionID, text)
 }
 
 // NewTool creates a simple SDK tool definition.

@@ -130,10 +130,45 @@ if err := stream.Wait(); err != nil {
 }
 ```
 
+`StreamChat` 是带 session 记忆的流式对话。它会自动记住 user prompt，并在 `Wait()` 成功后把完整 assistant 回复写回同一个 session：
+
+```go
+stream, err := client.StreamChat(ctx, "user-42", "我叫什么？")
+if err != nil {
+	return err
+}
+
+for chunk := range stream.Text() {
+	fmt.Print(chunk)
+}
+
+if err := stream.Wait(); err != nil {
+	return err
+}
+```
+
 别名：
 
 ```go
 stream, err := client.TextStream(ctx, "写一句欢迎语")
+```
+
+记忆规则：
+
+```go
+// 单次文本，不使用记忆
+text, err := client.Text(ctx, "写一句欢迎语")
+stream, err := client.StreamText(ctx, "写一句欢迎语")
+
+// 显式绑定 session，Text 会自动记 user + assistant
+text, err = client.Text(ctx, "继续", fullmodel.WithSession("user-42"))
+
+// 显式绑定 session，StreamText 只会自动记 user；assistant 流式内容由你决定是否写入
+stream, err = client.StreamText(ctx, "继续", fullmodel.WithSession("user-42"))
+
+// 推荐的会话接口：自动记 user + assistant
+reply, err := client.Chat(ctx, "user-42", "继续")
+stream, err = client.StreamChat(ctx, "user-42", "继续")
 ```
 
 流对象接口：
@@ -519,6 +554,7 @@ client.Text(ctx, text, opts...) (string, error)
 client.StreamText(ctx, text, opts...) (brain.StreamOutput, error)
 client.TextStream(ctx, text, opts...) (brain.StreamOutput, error)
 client.Chat(ctx, sessionID, text, opts...) (string, error)
+client.StreamChat(ctx, sessionID, text, opts...) (brain.StreamOutput, error)
 
 client.Image(ctx, image, prompt, opts...) (string, error)
 client.Video(ctx, video, prompt, opts...) (string, error)

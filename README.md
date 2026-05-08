@@ -269,14 +269,28 @@ if err := stream.Wait(); err != nil {
 }
 ```
 
+需要流式会话记忆时，用 `StreamChat`：
+
+```go
+stream, err := client.StreamChat(ctx, "user-42", "继续刚才的话题")
+for chunk := range stream.Text() {
+	fmt.Print(chunk)
+}
+if err := stream.Wait(); err != nil {
+	return err
+}
+```
+
 ### SDK 记忆管理
 
-`client.Chat(ctx, sessionID, text)` 会自动读取并写回该 session 的对话历史：
+`client.Chat(ctx, sessionID, text)` 和 `client.StreamChat(ctx, sessionID, text)` 会自动读取并写回该 session 的对话历史：
 
 ```go
 reply, err := client.Chat(ctx, "user-42", "我叫 Lei，记住这个名字")
 reply, err = client.Chat(ctx, "user-42", "我叫什么？")
 ```
+
+`Text` / `StreamText` 默认是单次对话；如果传入 `fullmodel.WithSession("user-42")` 才会读取 session 历史。`Text + WithSession` 会记住 user 和 assistant；`StreamText + WithSession` 只会自动记住 user，assistant 的流式内容需要你自己收集后写入 memory。想要自动记完整流式回复，直接用 `StreamChat`。
 
 需要手动管理历史时，用 `client.Memory()`：
 

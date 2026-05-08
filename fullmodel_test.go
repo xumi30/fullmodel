@@ -141,6 +141,48 @@ func TestStreamTextSDKReadsSSEChunks(t *testing.T) {
 	require.Equal(t, "你好，李白是唐代诗人。", text.String())
 }
 
+func TestStreamTextWithSessionRemembersUserOnly(t *testing.T) {
+	client := &Client{
+		runner:   fakeRunner(t, processmessage.KindText, streamOutput("你", "好")),
+		sessions: agentruntime.NewSessionStore(),
+	}
+
+	stream, err := client.StreamText(context.Background(), "hello", WithSession("s1"))
+	require.NoError(t, err)
+	for range stream.Text() {
+	}
+	require.NoError(t, stream.Wait())
+
+	messages := client.Memory().Messages("s1")
+	require.Len(t, messages, 1)
+	require.Equal(t, "user", messages[0].Role)
+	require.Equal(t, "hello", messages[0].Content)
+}
+
+func TestStreamChatRemembersAssistantAfterWait(t *testing.T) {
+	client := &Client{
+		runner:   fakeRunner(t, processmessage.KindText, streamOutput("你", "好")),
+		sessions: agentruntime.NewSessionStore(),
+	}
+
+	stream, err := client.StreamChat(context.Background(), "s1", "hello")
+	require.NoError(t, err)
+
+	var text strings.Builder
+	for chunk := range stream.Text() {
+		text.WriteString(chunk)
+	}
+	require.Equal(t, "你好", text.String())
+	require.NoError(t, stream.Wait())
+
+	messages := client.Memory().Messages("s1")
+	require.Len(t, messages, 2)
+	require.Equal(t, "user", messages[0].Role)
+	require.Equal(t, "hello", messages[0].Content)
+	require.Equal(t, "assistant", messages[1].Role)
+	require.Equal(t, "你好", messages[1].Content)
+}
+
 func TestMemoryManager(t *testing.T) {
 	client := &Client{sessions: agentruntime.NewSessionStore()}
 	memory := client.Memory()
@@ -245,6 +287,16 @@ func TestTTSRunOptions(t *testing.T) {
 	require.Equal(t, 1.2, runOpts.options.Extra["rate"])
 	require.Equal(t, 0.9, runOpts.options.Extra["pitch"])
 	require.Equal(t, true, runOpts.options.Extra["enable_ssml"])
+}
+
+func streamOutput(chunks ...string) *brain.BrainOutput {
+	return &brain.BrainOutput{
+		Status: brain.BrainStatus{Success: true},
+		Stream: newFakeStream(
+			chunks,
+			nil,
+		),
+	}
 }
 
 func fakeRunner(t *testing.T, kind processmessage.Kind, output *brain.BrainOutput) *agentruntime.Runner {
