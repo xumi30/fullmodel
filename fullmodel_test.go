@@ -2,8 +2,13 @@ package fullmodel
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/xumi30/fullmodel/agent/brain"
@@ -85,6 +90,55 @@ func TestStreamTextReturnsStream(t *testing.T) {
 	first, ok := <-stream.Text()
 	require.True(t, ok)
 	require.Equal(t, "你", first)
+}
+
+func TestStreamTextSDKReadsSSEChunks(t *testing.T) {
+	var sawStream bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, http.MethodPost, r.Method)
+
+		var body struct {
+			Stream bool  `json:"stream"`
+			Tools  []any `json:"tools"`
+		}
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		sawStream = body.Stream
+		require.Empty(t, body.Tools)
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, ok := w.(http.Flusher)
+		require.True(t, ok)
+
+		for _, chunk := range []string{"你好，", "李白是唐代诗人。"} {
+			_, _ = fmt.Fprintf(w, "data: {\"id\":\"test\",\"choices\":[{\"index\":0,\"delta\":{\"content\":%q}}]}\n\n", chunk)
+			flusher.Flush()
+		}
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+		flusher.Flush()
+	}))
+	defer server.Close()
+
+	client, err := Open(WithConfigs(&fileop.BrainConfigs{
+		Defaults: fileop.ModelConfig{
+			Provider: "generic",
+			APIKey:   "test",
+			BaseURL:  server.URL,
+			Model:    "test-model",
+		},
+	}))
+	require.NoError(t, err)
+
+	stream, err := client.StreamText(context.Background(), "你好，介绍一下李白")
+	require.NoError(t, err)
+	require.NotNil(t, stream)
+
+	var text strings.Builder
+	for chunk := range stream.Text() {
+		text.WriteString(chunk)
+	}
+	require.NoError(t, stream.Wait())
+	require.True(t, sawStream)
+	require.Equal(t, "你好，李白是唐代诗人。", text.String())
 }
 
 func TestMemoryManager(t *testing.T) {

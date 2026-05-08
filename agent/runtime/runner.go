@@ -59,7 +59,7 @@ func (r *Runner) Run(ctx context.Context, request Request) (*Result, error) {
 	if request.Options.Context == nil {
 		request.Options.Context = context.Background()
 	}
-	if len(request.Options.Tools) == 0 && r.toolExecutor != nil {
+	if len(request.Options.Tools) == 0 && !request.Options.DisableDefaultTools && r.toolExecutor != nil {
 		request.Options.Tools = r.toolExecutor.Tools()
 	}
 

@@ -16,6 +16,7 @@ import (
 	"github.com/xumi30/fullmodel/agent/tools/builtins"
 	"github.com/xumi30/fullmodel/processmessage"
 	"github.com/xumi30/fullmodel/utils/fileop"
+	"github.com/xumi30/fullmodel/utils/logging"
 )
 
 // Client is the high-level SDK entrypoint for applications.
@@ -161,6 +162,12 @@ func WithProcessOptions(options processmessage.Options) RunOption {
 	}
 }
 
+func WithRuntimeTools(enabled bool) RunOption {
+	return func(opts *runOptions) {
+		opts.options.DisableDefaultTools = !enabled
+	}
+}
+
 func (c *Client) Run(ctx context.Context, message processmessage.Message, opts ...RunOption) (*agentruntime.Result, error) {
 	if c == nil || c.runner == nil {
 		return nil, fmt.Errorf("fullmodel client is nil")
@@ -198,14 +205,28 @@ func (c *Client) Text(ctx context.Context, text string, opts ...RunOption) (stri
 }
 
 func (c *Client) StreamText(ctx context.Context, text string, opts ...RunOption) (brain.StreamOutput, error) {
-	opts = append(opts, WithStream(true))
+	logging.Info("sdk StreamText start text_len=%d opts=%d", len(text), len(opts))
+	opts = append(opts, WithStream(true), WithRuntimeTools(false))
 	result, err := c.Run(ctx, processmessage.TextMessage{Text: text}, opts...)
 	if err != nil {
+		logging.Error("sdk StreamText run failed: %v", err)
 		return nil, err
 	}
 	if result == nil || result.Output == nil {
+		logging.Warn("sdk StreamText got empty result output")
 		return nil, nil
 	}
+	if result.Output.Stream == nil {
+		logging.Warn("sdk StreamText got nil stream mode=%s success=%v error=%q text_len=%d choices=%d",
+			result.Output.Mode,
+			result.Output.Status.Success,
+			result.Output.Status.Error,
+			len(result.Output.Content.Text),
+			len(result.Output.Choices),
+		)
+		return nil, nil
+	}
+	logging.Info("sdk StreamText stream ready mode=%s success=%v choices=%d", result.Output.Mode, result.Output.Status.Success, len(result.Output.Choices))
 	return result.Output.Stream, nil
 }
 

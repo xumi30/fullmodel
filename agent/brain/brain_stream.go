@@ -3,6 +3,8 @@ package brain
 import (
 	"context"
 	"time"
+
+	"github.com/xumi30/fullmodel/utils/logging"
 )
 
 // 流式输出接口
@@ -81,6 +83,7 @@ func (s *streamOutput) fail(err error) {
 	if err == nil {
 		return
 	}
+	logging.Error("stream failed: %v", err)
 	s.finalErr = err
 	select {
 	case s.errCh <- err:
@@ -93,6 +96,7 @@ func (s *streamOutput) complete(err error) {
 	if err != nil || s.finalErr == nil {
 		s.finalErr = err
 	}
+	logging.Info("stream complete final_error=%v text_buffer_len=%d tool_buffer_len=%d", s.finalErr, len(s.textCh), len(s.toolCh))
 	close(s.textCh)
 	close(s.errCh)
 	close(s.toolCh)

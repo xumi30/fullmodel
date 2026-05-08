@@ -249,6 +249,8 @@ func snapshotStreamToolCalls(byKey map[string]*streamToolCallAcc, choiceIndex in
 func createChatCompletionStream(ctx context.Context, httpClient *http.Client, cfg *Config, req ChatCompletionRequest) (*BrainOutput, error) {
 	streamOut := newStreamOutput(ctx, 64)
 	usage := &Usage{}
+	url := getChatCompletionsURL(cfg)
+	logging.Info("chat stream create provider=%s model=%s url=%s messages=%d tools=%d", cfg.Provider, req.Model, url, len(req.Messages), len(req.Tools))
 
 	go func() {
 		defer streamOut.complete(nil)
@@ -265,7 +267,8 @@ func createChatCompletionStream(ctx context.Context, httpClient *http.Client, cf
 		}
 
 		logging.Info("Request body: %s", string(requestBody))
-		httpReq, err := http.NewRequestWithContext(ctx, "POST", getChatCompletionsURL(cfg), bytes.NewReader(requestBody))
+		logging.Info("chat stream request start method=POST url=%s body_bytes=%d", url, len(requestBody))
+		httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(requestBody))
 		if err != nil {
 			streamOut.fail(err)
 			return
@@ -274,13 +277,16 @@ func createChatCompletionStream(ctx context.Context, httpClient *http.Client, cf
 
 		resp, err := httpClient.Do(httpReq)
 		if err != nil {
+			logging.Error("chat stream request failed: %v", err)
 			streamOut.fail(err)
 			return
 		}
 		defer resp.Body.Close()
+		logging.Info("chat stream response status=%d content_type=%q transfer_encoding=%v", resp.StatusCode, resp.Header.Get("Content-Type"), resp.TransferEncoding)
 
 		if resp.StatusCode != http.StatusOK {
 			body, _ := io.ReadAll(resp.Body)
+			logging.Error("chat stream response non-200 status=%d body=%s", resp.StatusCode, truncateForLog(string(body), 2000))
 			streamOut.fail(fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(body)))
 			return
 		}
@@ -288,22 +294,32 @@ func createChatCompletionStream(ctx context.Context, httpClient *http.Client, cf
 		scanner := bufio.NewScanner(resp.Body)
 		// 默认 token 限制较小（64K），长内容可能被截断导致扫描提前失败
 		scanner.Buffer(make([]byte, 16*1024), 2*1024*1024)
+		lineCount := 0
+		dataCount := 0
+		textChunkCount := 0
+		toolChunkCount := 0
 		for scanner.Scan() {
 			select {
 			case <-ctx.Done():
+				logging.Warn("chat stream context done before reading line: %v", ctx.Err())
 				streamOut.fail(ctx.Err())
 				return
 			default:
 			}
 
 			line := scanner.Text()
+			lineCount++
 			if line == "" {
+				logging.Info("chat stream line=%d empty", lineCount)
 				continue
 			}
+			logging.Info("chat stream line=%d bytes=%d preview=%s", lineCount, len(line), truncateForLog(line, 600))
 
 			if after, ok := strings.CutPrefix(line, "data: "); ok {
 				data := after
+				dataCount++
 				if data == "[DONE]" {
+					logging.Info("chat stream done line=%d data_lines=%d text_chunks=%d tool_chunks=%d", lineCount, dataCount, textChunkCount, toolChunkCount)
 					if snap := snapshotStreamToolCalls(toolAccByKey, 0); len(snap) > 0 {
 						select {
 						case <-ctx.Done():
@@ -317,18 +333,32 @@ func createChatCompletionStream(ctx context.Context, httpClient *http.Client, cf
 
 				var chunk ChatCompletionChunk
 				if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+					logging.Error("chat stream decode failed line=%d data=%s err=%v", lineCount, truncateForLog(data, 2000), err)
 					streamOut.fail(fmt.Errorf("failed to decode SSE data chunk: %w", err))
 					return
 				}
+				logging.Info("chat stream chunk line=%d id=%s choices=%d usage=%v", lineCount, chunk.ID, len(chunk.Choices), chunk.Usage != nil)
 
 				if chunk.Usage != nil {
 					usage.PromptTokens = chunk.Usage.PromptTokens
 					usage.CompletionTokens = chunk.Usage.CompletionTokens
 					usage.TotalTokens = chunk.Usage.TotalTokens
+					logging.Info("chat stream usage prompt=%d completion=%d total=%d", usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens)
 				}
 
 				for _, choice := range chunk.Choices {
 					ci := choice.Index
+					logging.Info("chat stream choice line=%d index=%d finish=%q content_len=%d reasoning_len=%d tool_calls=%d",
+						lineCount,
+						ci,
+						choice.FinishReason,
+						len(choice.Delta.Content),
+						len(choice.Delta.ReasoningContent),
+						len(choice.Delta.ToolCalls),
+					)
+					if choice.Delta.ReasoningContent != "" && choice.Delta.Content == "" {
+						logging.Warn("chat stream reasoning chunk present without content line=%d index=%d reasoning_preview=%s", lineCount, ci, truncateForLog(choice.Delta.ReasoningContent, 300))
+					}
 					if len(choice.Delta.ToolCalls) > 0 {
 						if mergeStreamToolCallDeltas(toolAccByKey, ci, choice.Delta.ToolCalls) {
 							snap := snapshotStreamToolCalls(toolAccByKey, ci)
@@ -340,6 +370,8 @@ func createChatCompletionStream(ctx context.Context, httpClient *http.Client, cf
 										streamOut.fail(ctx.Err())
 										return
 									case streamOut.toolCh <- snap:
+										toolChunkCount++
+										logging.Info("chat stream emitted tool snapshot line=%d calls=%d", lineCount, len(snap))
 									}
 								}
 							}
@@ -351,6 +383,8 @@ func createChatCompletionStream(ctx context.Context, httpClient *http.Client, cf
 							streamOut.fail(ctx.Err())
 							return
 						case streamOut.textCh <- choice.Delta.Content:
+							textChunkCount++
+							logging.Info("chat stream emitted text line=%d chunk=%d bytes=%d preview=%s", lineCount, textChunkCount, len(choice.Delta.Content), truncateForLog(choice.Delta.Content, 300))
 						}
 					}
 					if choice.FinishReason == "tool_calls" {
@@ -360,6 +394,8 @@ func createChatCompletionStream(ctx context.Context, httpClient *http.Client, cf
 								streamOut.fail(ctx.Err())
 								return
 							case streamOut.toolCh <- snap:
+								toolChunkCount++
+								logging.Info("chat stream emitted final tool snapshot line=%d calls=%d", lineCount, len(snap))
 							}
 						}
 					}
@@ -368,9 +404,11 @@ func createChatCompletionStream(ctx context.Context, httpClient *http.Client, cf
 		}
 
 		if err := scanner.Err(); err != nil && err != io.EOF {
+			logging.Error("chat stream scanner error after lines=%d data_lines=%d: %v", lineCount, dataCount, err)
 			streamOut.fail(fmt.Errorf("stream scanner error: %w", err))
 			return
 		}
+		logging.Info("chat stream scanner ended lines=%d data_lines=%d text_chunks=%d tool_chunks=%d usage_total=%d", lineCount, dataCount, textChunkCount, toolChunkCount, usage.TotalTokens)
 
 		// 部分实现不发送 [DONE]；结束前再推一次首条 choice 的工具快照
 		if snap := snapshotStreamToolCalls(toolAccByKey, 0); len(snap) > 0 {
@@ -379,6 +417,8 @@ func createChatCompletionStream(ctx context.Context, httpClient *http.Client, cf
 				streamOut.fail(ctx.Err())
 				return
 			case streamOut.toolCh <- snap:
+				toolChunkCount++
+				logging.Info("chat stream emitted trailing tool snapshot calls=%d", len(snap))
 			}
 		}
 	}()

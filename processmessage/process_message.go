@@ -49,6 +49,8 @@ type Options struct {
 	Model   string
 	Stream  bool
 
+	DisableDefaultTools bool
+
 	Temperature *float64
 	TopP        *float64
 	MaxTokens   *int
