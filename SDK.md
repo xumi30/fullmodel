@@ -289,6 +289,44 @@ logs/default.log
 tail -f logs/default.log
 ```
 
+应用侧可以直接引入日志包：
+
+```go
+import "github.com/xumi30/fullmodel/utils/logging"
+
+logging.Info("user message session=%s text=%q", sessionID, text)
+logging.Debug("tool result=%s", result)
+logging.Warn("stream retry attempt=%d", attempt)
+logging.Error("stream failed: %v", err)
+```
+
+创建自己的 logger：
+
+```go
+logger := logging.NewLogger("my-app", "logs/my-app.log", logging.INFO, 20*1024*1024)
+defer logger.Close()
+
+logger.Info("boot")
+logger.Error("failed: %v", err)
+```
+
+替换默认 logger：
+
+```go
+logger := logging.NewLogger("default", "logs/app-default.log", logging.DEBUG, 20*1024*1024)
+logging.SetDefaultLogger(logger)
+defer logging.CloseAll()
+```
+
+日志级别：
+
+```go
+logging.DEBUG
+logging.INFO
+logging.WARN
+logging.ERROR
+```
+
 流式文本符合预期时，会看到：
 
 ```text

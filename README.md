@@ -85,6 +85,39 @@ logs/default.log
 tail -f logs/default.log
 ```
 
+应用也可以直接使用 FullModel 的日志接口：
+
+```go
+import "github.com/xumi30/fullmodel/utils/logging"
+
+func main() {
+	logging.Info("server started addr=%s", "127.0.0.1:8080")
+	logging.Warn("retrying request id=%s", "req-1")
+	logging.Error("request failed: %v", err)
+}
+```
+
+需要独立日志文件时：
+
+```go
+logger := logging.NewLogger("app", "logs/app.log", logging.INFO, 10*1024*1024)
+logger.Info("application booted")
+defer logger.Close()
+```
+
+常用接口：
+
+```go
+logging.Debug(format, args...)
+logging.Info(format, args...)
+logging.Warn(format, args...)
+logging.Error(format, args...)
+logging.NewLogger(name, filePath, level, maxSize)
+logging.GetLogger(name)
+logging.SetDefaultLogger(logger)
+logging.CloseAll()
+```
+
 流式请求重点看这些日志：
 
 ```text
