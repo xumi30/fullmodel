@@ -489,6 +489,74 @@ fullmodel.WithTTSPitch(1.0)
 fullmodel.WithTTSSSML(false)
 ```
 
+### 千问声音复刻与实时语音
+
+创建复刻音色。`TargetModel` 必须和后续合成时使用的 TTS 模型一致：
+
+```go
+sample, err := fullmodel.MediaFromFile("./voice.mp3")
+voice, err := client.CloneVoice(ctx, fullmodel.VoiceCloneRequest{
+	Audio:         sample,
+	PreferredName: "brand_voice",
+	TargetModel:   fullmodel.QwenTTSVCRealtimeModel,
+	Language:      "zh",
+})
+fmt.Println(voice.Voice)
+```
+
+使用 Qwen-TTS Realtime WebSocket 合成。返回值会收集服务端实时下发的音频分片：
+
+```go
+pcm, err := client.RealtimeTTSBytes(ctx, "你好，欢迎使用 FullModel", fullmodel.RealtimeTTSConfig{
+	Model:          fullmodel.QwenTTSVCRealtimeModel,
+	Voice:          voice.Voice,
+	Mode:           fullmodel.QwenRealtimeModeServerCommit,
+	ResponseFormat: "pcm",
+	SampleRate:     24000,
+})
+```
+
+需要自己接管低延迟播放时，使用会话接口：
+
+```go
+session, err := client.RealtimeTTS(ctx, fullmodel.RealtimeTTSConfig{
+	Model: fullmodel.QwenTTSFlashRealtimeModel,
+	Voice: "Cherry",
+})
+defer session.Close()
+
+go func() {
+	for chunk := range session.Audio() {
+		_ = chunk // 写入播放器或业务传输通道
+	}
+}()
+
+_ = session.AppendText("第一段文本。")
+_ = session.AppendText("第二段文本。")
+_ = session.Finish()
+```
+
+实时语音交互走百炼多模态 WebSocket。业务侧可以直接发送二进制音频，也可以主动要求服务端按 prompt 或 transcript 应答：
+
+```go
+dialog, err := client.RealtimeDialog(ctx, fullmodel.RealtimeDialogConfig{
+	WorkspaceID: "llm-xxxxx",
+	AppID:       "app-xxxxx",
+	Upstream: map[string]any{
+		"type":         "AudioOnly",
+		"mode":         "push2talk",
+		"audio_format": "pcm",
+		"sample_rate":  16000,
+	},
+})
+defer dialog.Close()
+
+_ = dialog.SendSpeech()
+_ = dialog.SendAudio(pcmChunk)
+_ = dialog.StopSpeech()
+_ = dialog.RequestToRespond(fullmodel.RealtimeDialogRespondPrompt, "请用一句话介绍今天的安排", nil)
+```
+
 ## 生成能力
 
 文生图：

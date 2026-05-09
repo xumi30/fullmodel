@@ -315,6 +315,8 @@ client, err := fullmodel.Open(fullmodel.WithSessionMemory(store))
 
 ### 4. 开放 HTTP API
 
+完整 **REST 路径表、鉴权、声音克隆 REST、WebSocket 实时 TTS 协议** 见下文 **[HTTP API 路由与实时语音](#http-api-路由与实时语音)**；此处为最小上手示例。
+
 直接启动内置服务：
 
 ```bash
@@ -373,6 +375,169 @@ curl -N http://127.0.0.1:8080/v1/messages \
     "stream": true
   }'
 ```
+
+### HTTP API 路由与实时语音
+
+下面是与 `go run ./cmd/fullmodel serve` 对应的**路由表**、**鉴权规则**，以及 **WebSocket 实时 TTS** 的协议说明。JSON 请求体、`kind` 取值、响应 envelope、任务与 Artifacts 等仍见本文后面的「HTTP 请求格式」「长任务」等小节。
+
+#### 启动参数
+
+```bash
+go run ./cmd/fullmodel serve \
+  -addr 127.0.0.1:8080 \
+  [-config path/to/llm.yaml] \
+  [-task-workers 4] \
+  [-api-key <key>]
+```
+
+- **`-api-key`**：为空时表示**不启用** HTTP 鉴权。若命令行未写 `-api-key` 且环境中已设置 **`FULLMODEL_API_KEY`**，则 **serve 会默认使用该值作为 API Key**（便于与下方 `curl -H "Authorization: Bearer $FULLMODEL_API_KEY"` 一致）。本地调试若不想鉴权，可先 `unset FULLMODEL_API_KEY` 或显式传入 `-api-key ""`。
+- 语音相关能力依赖 **`config/llm.yaml`** 中的 **`brains.voice`** 与 **`DASHSCOPE_API_KEY`**（或其它 profile 密钥）。
+
+#### 鉴权（可选）
+
+启用 API Key 后以下方式任选其一：
+
+| 方式 | 用法 |
+|------|------|
+| Header | `X-API-Key: <key>` |
+| Header | `Authorization: Bearer <key>` |
+| Query | `?api_key=<key>`（适合浏览器 **WebSocket**，无法自定义 Header 时） |
+
+#### 路由一览
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `GET` | `/v1/capabilities` | 已注册能力列表 |
+| `POST` | `/v1/messages` | 统一消息入口（JSON 或 `multipart/form-data`） |
+| `POST` | `/v1/chat` | 聊天快捷入口（JSON，`kind` 默认 `text`） |
+| `POST` | `/v1/tasks` | 创建异步任务 |
+| `GET` | `/v1/tasks` | 列出任务 |
+| `GET` | `/v1/tasks/{id}` | 查询任务状态与结果 |
+| `DELETE` | `/v1/tasks/{id}` | 取消任务 |
+| `GET` | `/v1/artifacts` | 列出工件 |
+| `GET` | `/v1/artifacts/{id}` | 下载二进制工件（音频/图片等） |
+| `GET` | `/v1/sessions/{id}` | 查看会话消息列表 |
+| `DELETE` | `/v1/sessions/{id}` | 清除会话 |
+| `GET` | `/v1/tools` | 已注册工具元数据 |
+| `GET` | `/v1/voice/customizations` | 列出已注册的克隆音色（Qwen voice enrollment） |
+| `POST` | `/v1/voice/customizations` | 提交样本音频，创建克隆音色 |
+| `DELETE` | `/v1/voice/customizations/{voice}` | 按音色 id 删除克隆配置 |
+| `GET` | `/v1/voice/tts/stream` | **升级到 WebSocket**：实时语音合成流（见下） |
+
+#### REST：声音克隆（Qwen Voice Enrollment）
+
+对接 DashScope **音色定制 / 克隆** HTTP API（`qwen-voice-enrollment`）。需有效的 `DASHSCOPE_API_KEY` 及百炼侧权限；返回的 **`voice` id** 可用于后续 **Qwen 实时 TTS** WebSocket 的 `voice` 查询参数（需与 `target_model` 支持的音色体系一致，见阿里云文档）。
+
+**`GET /v1/voice/customizations`**
+
+- Query：`page_size`、`page_index`（可选，与 SDK `VoiceListRequest` 一致）
+- 响应：`result` 内为 `VoiceListResult`（`voices`、`request_id`、`usage` 等），与其它接口相同 envelope。
+
+**`POST /v1/voice/customizations`**
+
+- **JSON**：`application/json`，字段示例：
+
+```json
+{
+  "preferred_name": "my_voice",
+  "target_model": "qwen3-tts-vc-realtime-2026-01-15",
+  "language": "zh",
+  "text": "可选，样本对齐文本",
+  "audio_url": "https://example.com/sample.mp3",
+  "audio_mime_type": "audio/mpeg",
+  "audio_data": "BASE64_RAW",
+  "audio_data_url": "data:audio/mpeg;base64,..."
+}
+```
+
+（`audio_url`、`audio_data`、`audio_data_url` 三选一；与 SDK `VoiceCloneRequest` 一致。）
+
+- **`multipart/form-data`**：表单字段 `preferred_name`、`target_model`、`language`、`text`、`model`；音频任选 `audio` 文件、`audio_url` 或 `audio_data_url`。
+
+**`DELETE /v1/voice/customizations/{voice}`**
+
+- 路径最后一段为服务端返回的 **`voice` id**（请对特殊字符做 URL 编码）。
+
+**curl 示例**
+
+```bash
+# 列表
+curl -s "http://127.0.0.1:8080/v1/voice/customizations?page_size=20&page_index=1"
+
+# 克隆（上传文件）
+curl -s http://127.0.0.1:8080/v1/voice/customizations \
+  -F preferred_name=demo_voice \
+  -F target_model=qwen3-tts-vc-realtime-2026-01-15 \
+  -F language=zh \
+  -F audio=@./sample.mp3
+
+# 删除
+curl -s -X DELETE "http://127.0.0.1:8080/v1/voice/customizations/<voice_id>"
+```
+
+#### WebSocket：实时语音合成（Qwen Realtime TTS）
+
+终端或浏览器通过 **`ws://`**（或 **`wss://`**）连接上述路径。服务端再与阿里云 DashScope **Qwen 实时 TTS** WebSocket 建连；这与 **`POST /v1/messages`** 且 `kind` 为 **`text_to_speech`** 所使用的 **CosyVoice（inference）** 链路不同。
+
+配置里 `brains.voice.model` 常见为 **`cosyvoice-v3-flash`**（给 ASR、非实时 TTS 等用）。本 WebSocket 会自动选用 **`qwen3-tts-flash-realtime`** 一类带 **`realtime`** 的模型；若在 query 中显式传入其它 realtime 模型 id，则以显式为准。
+
+**握手时的查询参数（可选）**
+
+| 参数 | 说明 |
+|------|------|
+| `voice` | 音色，默认 `Cherry` |
+| `model` | Qwen 实时 TTS 模型 id；省略则按内部规则选择 |
+| `mode` | `server_commit`（默认）或 `commit` |
+| `language_type` | 如 `Chinese` |
+| `format` | 默认 `pcm` |
+| `sample_rate` | 默认 `24000` |
+| `instructions` | 合成风格说明 |
+| `optimize_instructions` | `true` / `1` 表示优化指令 |
+| `api_key` | 与 HTTP 鉴权相同（启用鉴权时） |
+
+**客户端 → 服务端（文本帧 JSON）**
+
+| `op` | 示例 | 含义 |
+|------|------|------|
+| `append` | `{"op":"append","text":"你好"}` | 追加待合成文本 |
+| `commit` | `{"op":"commit"}` | 仅在 `mode=commit` 时需要 |
+| `clear` | `{"op":"clear"}` | 清空文本缓冲 |
+| `finish` | `{"op":"finish"}` | 结束本轮并关闭上游会话 |
+| `ping` | `{"op":"ping"}` | 心跳；对等返回 `pong` |
+
+**服务端 → 客户端**
+
+- **二进制帧**：连续 **PCM**（与 `format`、`sample_rate` 一致；默认 16 位小端、单声道、24 kHz）。
+- **文本帧 JSON**（节选）：
+  - `{"op":"event","type":"<上游事件类型>"}`，例如 `session.created`、`response.done`、`session.finished`。
+  - `{"op":"error","message":"...","error_code":"..."}`。
+  - `{"op":"done"}`：本轮结束。
+  - `{"op":"pong","t":<毫秒时间戳>}`。
+
+**命令行联调示例**
+
+```bash
+# 终端 A
+export DASHSCOPE_API_KEY="your-key"
+go run ./cmd/fullmodel serve -addr 127.0.0.1:8080
+
+# 终端 B（默认写出 tts_out.pcm）
+go run ./examples/voice_tts_ws_client \
+  -url "ws://127.0.0.1:8080/v1/voice/tts/stream" \
+  -text "你好，测试实时 TTS"
+
+# 若 serve 因 FULLMODEL_API_KEY 启用了鉴权，请传同一密钥，例如：
+# go run ./examples/voice_tts_ws_client -apikey "$FULLMODEL_API_KEY" ...
+```
+
+**播放 PCM（FFmpeg / ffplay 8.x）**  
+`ffplay` 对 raw PCM 不要使用 `-ac 1`（可能报 `Option not found`），可改用：
+
+```bash
+ffplay -f s16le -ar 24000 -ch_layout mono tts_out.pcm
+```
+
+**日志前缀**：`[voice.ws]` 为对客户端的 WebSocket；`[voice.realtime_tts]` 为连 DashScope 一侧。实现见 `cmd/fullmodel/voice_stream.go`、`voice_realtime.go`。
 
 ## CLI 调试
 

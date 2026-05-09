@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/xumi30/fullmodel"
 	"github.com/xumi30/fullmodel/agent/brain"
 	agentruntime "github.com/xumi30/fullmodel/agent/runtime"
 	agenttools "github.com/xumi30/fullmodel/agent/tools"
@@ -74,6 +75,7 @@ type serverState struct {
 	tasks     *agentruntime.TaskStore
 	artifacts *agentruntime.ArtifactStore
 	tools     *agentruntime.ToolRegistryExecutor
+	sdk       *fullmodel.Client
 }
 
 func main() {
@@ -160,8 +162,23 @@ func serve(args []string) error {
 	mux.HandleFunc("GET /v1/tools", func(w http.ResponseWriter, r *http.Request) {
 		writeOK(w, state.tools.Tools())
 	})
+	mux.HandleFunc("GET /v1/voice/customizations", func(w http.ResponseWriter, r *http.Request) {
+		handleListVoiceCustomizations(w, r, state)
+	})
+	mux.HandleFunc("POST /v1/voice/customizations", func(w http.ResponseWriter, r *http.Request) {
+		handleCreateVoiceCustomization(w, r, state)
+	})
+	mux.HandleFunc("DELETE /v1/voice/customizations/", func(w http.ResponseWriter, r *http.Request) {
+		handleDeleteVoiceCustomization(w, r, state)
+	})
+	mux.HandleFunc("GET /v1/voice/tts/stream", func(w http.ResponseWriter, r *http.Request) {
+		handleVoiceTTSStream(w, r, state.sdk)
+	})
 
 	fmt.Printf("fullmodel api listening on http://%s\n", *addr)
+	if strings.TrimSpace(*apiKey) != "" {
+		fmt.Fprintln(os.Stderr, "fullmodel: HTTP API key auth is on (from -api-key or FULLMODEL_API_KEY). WebSocket clients must send the same key (X-API-Key, Bearer, or ?api_key=).")
+	}
 	return http.ListenAndServe(*addr, authMiddleware(mux, *apiKey))
 }
 
@@ -226,12 +243,21 @@ func newServerState(configFile string, taskWorkers int) (*serverState, error) {
 	if err != nil {
 		return nil, err
 	}
+	sdk, err := fullmodel.Open(
+		fullmodel.WithConfigs(cfgs),
+		fullmodel.WithToolExecutor(toolExecutor),
+		fullmodel.WithSessionMemory(sessionStore),
+	)
+	if err != nil {
+		return nil, err
+	}
 	return &serverState{
 		runner:    agentruntime.NewRunner(registry, toolExecutor),
 		sessions:  sessionStore,
 		tasks:     agentruntime.NewTaskStore(taskWorkers),
 		artifacts: artifactStore,
 		tools:     toolExecutor,
+		sdk:       sdk,
 	}, nil
 }
 
@@ -578,7 +604,13 @@ func authorized(r *http.Request, apiKey string) bool {
 	}
 	const bearer = "Bearer "
 	auth := r.Header.Get("Authorization")
-	return strings.HasPrefix(auth, bearer) && strings.TrimSpace(strings.TrimPrefix(auth, bearer)) == apiKey
+	if strings.HasPrefix(auth, bearer) && strings.TrimSpace(strings.TrimPrefix(auth, bearer)) == apiKey {
+		return true
+	}
+	if r.URL.Query().Get("api_key") == apiKey {
+		return true
+	}
+	return false
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {
@@ -621,6 +653,8 @@ func firstNonEmpty(values ...string) string {
 func printUsage() {
 	fmt.Print(`usage:
   fullmodel serve [-addr 127.0.0.1:8080] [-config config/llm.yaml]
+    Voice: GET/POST /v1/voice/customizations, DELETE /v1/voice/customizations/{voice}
+    WebSocket realtime TTS: GET ws://<addr>/v1/voice/tts/stream (optional query: voice, model, mode, format, sample_rate, ...)
   fullmodel run [-kind text] [-prompt "..."] [-stream]
 `)
 }

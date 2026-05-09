@@ -25,8 +25,7 @@ func TestAuthMiddleware(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 	require.Equal(t, http.StatusNoContent, rec.Code)
 
-	req = httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Header.Set("Authorization", "Bearer secret")
+	req = httptest.NewRequest(http.MethodGet, "/?api_key=secret", nil)
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	require.Equal(t, http.StatusNoContent, rec.Code)

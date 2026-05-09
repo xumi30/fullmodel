@@ -22,9 +22,11 @@ import (
 // Client is the high-level SDK entrypoint for applications.
 // Create one with Open, then reuse it across your app handlers or services.
 type Client struct {
-	runner   *agentruntime.Runner
-	sessions agentruntime.SessionMemory
-	tools    agentruntime.ToolExecutor
+	runner      *agentruntime.Runner
+	sessions    agentruntime.SessionMemory
+	tools       agentruntime.ToolExecutor
+	voiceConfig *brain.QwenConfig
+	httpClient  *http.Client
 }
 
 // Memory is the SDK-facing session memory manager.
@@ -118,10 +120,16 @@ func Open(opts ...Option) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
+	voiceCfg, err := cfgs.Config(fileop.BrainConfigVoice)
+	if err != nil {
+		return nil, err
+	}
 	return &Client{
-		runner:   agentruntime.NewRunner(registry, options.tools),
-		sessions: options.sessions,
-		tools:    options.tools,
+		runner:      agentruntime.NewRunner(registry, options.tools),
+		sessions:    options.sessions,
+		tools:       options.tools,
+		voiceConfig: agentruntime.ToBrainConfig(voiceCfg),
+		httpClient:  http.DefaultClient,
 	}, nil
 }
 
