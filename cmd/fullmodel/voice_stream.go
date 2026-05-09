@@ -159,9 +159,17 @@ func pumpRealtimeTTS(ctx context.Context, session *fullmodel.RealtimeTTSSession,
 						logging.Info("[voice.ws] pump_audio_progress remote=%s chunks=%d bytes_total=%d last_chunk=%d",
 							remote, audioChunks, audioBytes, len(ev.Audio))
 					}
+					if audioChunks == 1 || audioChunks%20 == 0 {
+						logging.Info("[voice.ws] pump_write_binary_begin remote=%s chunks=%d chunk_bytes=%d bytes_total=%d",
+							remote, audioChunks, len(ev.Audio), audioBytes)
+					}
 					if err := ww.writeBinary(ev.Audio); err != nil {
 						logging.Warn("[voice.ws] pump_write_binary_failed remote=%s err=%v", remote, err)
 						return
+					}
+					if audioChunks == 1 || audioChunks%20 == 0 {
+						logging.Info("[voice.ws] pump_write_binary_ok remote=%s chunks=%d bytes_total=%d",
+							remote, audioChunks, audioBytes)
 					}
 				} else {
 					logging.Warn("[voice.ws] pump_empty_delta remote=%s", remote)

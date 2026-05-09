@@ -372,6 +372,7 @@ func (s *RealtimeTTSSession) Close() error {
 
 func (s *RealtimeTTSSession) CollectAudio(ctx context.Context) ([]byte, error) {
 	var out bytes.Buffer
+	events := s.events
 	for {
 		select {
 		case <-ctx.Done():
@@ -383,6 +384,10 @@ func (s *RealtimeTTSSession) CollectAudio(ctx context.Context) ([]byte, error) {
 		case chunk, ok := <-s.audio:
 			if ok {
 				out.Write(chunk)
+			}
+		case _, ok := <-events:
+			if !ok {
+				events = nil
 			}
 		case <-s.done:
 			return out.Bytes(), nil
@@ -408,8 +413,10 @@ func (s *RealtimeTTSSession) send(eventType string, body map[string]any) error {
 func (s *RealtimeTTSSession) readLoop() {
 	var exitReason string
 	var audioDeltas int64
+	var dispatchedEvents int64
 	defer func() {
-		logging.Info("[voice.realtime_tts] phase=readLoop_exit reason=%s upstream_audio_deltas=%d", exitReason, atomic.LoadInt64(&audioDeltas))
+		logging.Info("[voice.realtime_tts] phase=readLoop_exit reason=%s upstream_audio_deltas=%d dispatched_events=%d audio_chan_len=%d audio_chan_cap=%d events_chan_len=%d events_chan_cap=%d",
+			exitReason, atomic.LoadInt64(&audioDeltas), atomic.LoadInt64(&dispatchedEvents), len(s.audio), cap(s.audio), len(s.events), cap(s.events))
 	}()
 	defer close(s.done)
 	defer close(s.events)
@@ -472,18 +479,43 @@ func (s *RealtimeTTSSession) readLoop() {
 					logging.Info("[voice.realtime_tts] upstream_audio_delta_progress deltas=%d last_chunk_bytes=%d", n, len(chunk))
 				}
 				ev.Audio = chunk
+				if n == 1 || n%20 == 0 || len(s.audio) >= cap(s.audio)-1 {
+					logging.Info("[voice.realtime_tts] audio_chan_send_begin delta=%d chunk_bytes=%d audio_chan_len=%d audio_chan_cap=%d events_chan_len=%d events_chan_cap=%d",
+						n, len(chunk), len(s.audio), cap(s.audio), len(s.events), cap(s.events))
+				}
 				select {
 				case s.audio <- chunk:
-				case <-s.ctx.Done():
-					exitReason = "ctx_done_while_sending_audio"
-					return
+					if n == 1 || n%20 == 0 || len(s.audio) >= cap(s.audio)-1 {
+						logging.Info("[voice.realtime_tts] audio_chan_send_ok delta=%d audio_chan_len=%d audio_chan_cap=%d",
+							n, len(s.audio), cap(s.audio))
+					}
+				default:
+					logging.Warn("[voice.realtime_tts] audio_chan_send_dropped delta=%d chunk_bytes=%d audio_chan_len=%d audio_chan_cap=%d",
+						n, len(chunk), len(s.audio), cap(s.audio))
 				}
+			}
+		}
+		if ev.Type == "response.audio.delta" {
+			n := atomic.LoadInt64(&audioDeltas)
+			if n == 1 || n%20 == 0 || len(s.events) >= cap(s.events)-1 {
+				logging.Info("[voice.realtime_tts] event_chan_send_begin type=%s delta=%d events_chan_len=%d events_chan_cap=%d",
+					ev.Type, n, len(s.events), cap(s.events))
 			}
 		}
 		select {
 		case s.events <- ev:
+			n := atomic.AddInt64(&dispatchedEvents, 1)
+			if ev.Type == "response.audio.delta" {
+				delta := atomic.LoadInt64(&audioDeltas)
+				if delta == 1 || delta%20 == 0 || len(s.events) >= cap(s.events)-1 {
+					logging.Info("[voice.realtime_tts] event_chan_send_ok type=%s delta=%d dispatched_events=%d events_chan_len=%d events_chan_cap=%d",
+						ev.Type, delta, n, len(s.events), cap(s.events))
+				}
+			}
 		case <-s.ctx.Done():
 			exitReason = "ctx_done_while_dispatch"
+			logging.Warn("[voice.realtime_tts] event_chan_send_ctx_done type=%s err=%v events_chan_len=%d events_chan_cap=%d",
+				ev.Type, s.ctx.Err(), len(s.events), cap(s.events))
 			return
 		}
 		if ev.Type == "session.finished" {
