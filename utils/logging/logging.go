@@ -37,15 +37,16 @@ const (
 
 // Logger 保持现有调用方式的日志封装，底层使用 zerolog + buffered async writer。
 type Logger struct {
-	name     string
-	level    LogLevel
-	logger   zerolog.Logger
-	file     *os.File
-	writer   *asyncBufferedWriter
-	filePath string
-	maxSize  int64
-	mu       sync.Mutex
-	once     sync.Once
+	name      string
+	level     LogLevel
+	logger    zerolog.Logger
+	file      *os.File
+	writer    *asyncBufferedWriter
+	filePath  string
+	maxSize   int64
+	mirrorOut io.Writer // 非空时复制一份到该 Writer（例如 os.Stdout），避免只写文件时终端看不到
+	mu        sync.Mutex
+	once      sync.Once
 }
 
 // asyncBufferedWriter 用单 goroutine 串行写入，避免调用方阻塞在磁盘 IO 上。
@@ -183,12 +184,17 @@ func init() {
 		NoColor:    false,
 	}
 
-	defaultLogger = NewLogger("default", "logs/default.log", INFO, 10*1024*1024)
+	// 默认 logger：同时写磁盘与 stdout，避免「只配置了文件、终端无输出」以及找不到日志文件路径的困扰
+	defaultLogger = newLogger("default", "logs/default.log", INFO, 10*1024*1024, os.Stdout)
 	log.Logger = zerolog.New(consoleWriter).With().Timestamp().Logger()
 }
 
-// NewLogger 创建新的日志实例
+// NewLogger 创建新的日志实例（仅写文件；打开失败时静默丢弃，与历史行为一致）
 func NewLogger(name, filePath string, level LogLevel, maxSize int64) *Logger {
+	return newLogger(name, filePath, level, maxSize, nil)
+}
+
+func newLogger(name, filePath string, level LogLevel, maxSize int64, mirror io.Writer) *Logger {
 	key := name
 
 	mu.RLock()
@@ -206,9 +212,6 @@ func NewLogger(name, filePath string, level LogLevel, maxSize int64) *Logger {
 	}
 
 	resolvedPath := fileop.ResolvePath(filePath)
-	zl := zerolog.New(io.Discard).With().Timestamp().Str("component", name).Logger()
-	zl = zl.Level(convertLevel(level))
-
 	var (
 		file   *os.File
 		writer *asyncBufferedWriter
@@ -217,44 +220,42 @@ func NewLogger(name, filePath string, level LogLevel, maxSize int64) *Logger {
 	if candidate, size, err := openLogFile(resolvedPath); err == nil {
 		file = candidate
 		writer = newAsyncBufferedWriter(file, size)
-		fileWriter := &k8sConsoleWriter{
-			Out:        writer,
-			TimeFormat: "2006-01-02T15:04:05.000Z07:00",
-			NoColor:    true,
-		}
-		zl = zerolog.New(fileWriter).With().Timestamp().Str("component", name).Logger()
-		zl = zl.Level(convertLevel(level))
 	} else {
 		fallbackPath := fileop.ResolvePath(filePath)
 		if candidate, size, fallbackErr := openLogFile(fallbackPath); fallbackErr == nil {
 			resolvedPath = fallbackPath
 			file = candidate
 			writer = newAsyncBufferedWriter(file, size)
-			fileWriter := &k8sConsoleWriter{
-				Out:        writer,
-				TimeFormat: "2006-01-02T15:04:05.000Z07:00",
-				NoColor:    true,
-			}
-			zl = zerolog.New(fileWriter).With().Timestamp().Str("component", name).Logger()
-			zl = zl.Level(convertLevel(level))
-			fmt.Fprintf(os.Stderr, "logging: fallback to workspace log for %s: %s (primary failed: %v)\n", name, fallbackPath, err)
+			fmt.Fprintf(os.Stderr, "logging: fallback log path for %s: %s (primary failed: %v)\n", name, fallbackPath, err)
 		} else {
-			fmt.Fprintf(os.Stderr, "logging: fallback to stdout only for %s: primary=%v fallback=%v\n", name, err, fallbackErr)
+			fmt.Fprintf(os.Stderr, "logging: could not open log file for %s at %s: %v; fallback path %s: %v\n",
+				name, resolvedPath, err, fallbackPath, fallbackErr)
 		}
 	}
 
 	logger = &Logger{
-		name:     name,
-		level:    level,
-		logger:   zl,
-		file:     file,
-		writer:   writer,
-		filePath: resolvedPath,
-		maxSize:  maxSize,
+		name:      name,
+		level:     level,
+		file:      file,
+		writer:    writer,
+		filePath:  resolvedPath,
+		maxSize:   maxSize,
+		mirrorOut: mirror,
 	}
+	logger.rebuildLoggerLocked()
 
 	loggers[key] = logger
 	return logger
+}
+
+// DefaultLogFilePath returns the absolute path configured for the default logger's file sink (before or after open).
+func DefaultLogFilePath() string {
+	if defaultLogger == nil {
+		return ""
+	}
+	defaultLogger.mu.Lock()
+	defer defaultLogger.mu.Unlock()
+	return defaultLogger.filePath
 }
 
 // GetLogger 根据名称获取 Logger 实例
@@ -282,16 +283,22 @@ func GetDefaultLogger() *Logger {
 }
 
 func (l *Logger) rebuildLoggerLocked() {
-	zl := zerolog.New(io.Discard).With().Timestamp().Str("component", l.name).Logger()
+	timeFmt := "2006-01-02T15:04:05.000Z07:00"
+	var out io.Writer
 	if l.writer != nil {
-		fileWriter := &k8sConsoleWriter{
-			Out:        l.writer,
-			TimeFormat: "2006-01-02T15:04:05.000Z07:00",
-			NoColor:    true,
+		fileW := &k8sConsoleWriter{Out: l.writer, TimeFormat: timeFmt, NoColor: true}
+		if l.mirrorOut != nil {
+			mW := &k8sConsoleWriter{Out: l.mirrorOut, TimeFormat: timeFmt, NoColor: false}
+			out = zerolog.MultiLevelWriter(mW, fileW)
+		} else {
+			out = fileW
 		}
-		zl = zerolog.New(fileWriter).With().Timestamp().Str("component", l.name).Logger()
+	} else if l.mirrorOut != nil {
+		out = &k8sConsoleWriter{Out: l.mirrorOut, TimeFormat: timeFmt, NoColor: false}
+	} else {
+		out = io.Discard
 	}
-	l.logger = zl.Level(convertLevel(l.level))
+	l.logger = zerolog.New(out).With().Timestamp().Str("component", l.name).Logger().Level(convertLevel(l.level))
 }
 
 func openLogFile(path string) (*os.File, int64, error) {
@@ -476,7 +483,10 @@ type k8sConsoleWriter struct {
 func (w *k8sConsoleWriter) Write(p []byte) (n int, err error) {
 	var event map[string]interface{}
 	if err := json.Unmarshal(p, &event); err != nil {
-		return w.Out.Write(p)
+		if _, err := w.Out.Write(p); err != nil {
+			return 0, err
+		}
+		return len(p), nil
 	}
 
 	var builder strings.Builder
@@ -540,5 +550,9 @@ func (w *k8sConsoleWriter) Write(p []byte) (n int, err error) {
 	}
 
 	builder.WriteString("\n")
-	return w.Out.Write([]byte(builder.String()))
+	out := []byte(builder.String())
+	if _, err := w.Out.Write(out); err != nil {
+		return 0, err
+	}
+	return len(p), nil
 }

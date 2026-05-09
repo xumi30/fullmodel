@@ -198,6 +198,8 @@ brains:
     model: cosyvoice-v3-flash
   image:
     model: qwen-image-2.0-pro
+  omni:
+    model: qwen3.5-omni-plus
 `)
 
 	text, err := LoadTextBrainConfig()
@@ -215,6 +217,10 @@ brains:
 	image, err := LoadImageGenerateBrainConfig()
 	require.NoError(t, err)
 	require.Equal(t, "qwen-image-2.0-pro", image.Model)
+
+	omni, err := LoadOmniBrainConfig()
+	require.NoError(t, err)
+	require.Equal(t, "qwen3.5-omni-plus", omni.Model)
 }
 
 func TestConfigFilePath(t *testing.T) {

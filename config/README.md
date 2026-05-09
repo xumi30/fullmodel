@@ -23,6 +23,8 @@ brains:
     model: cosyvoice-v3-flash
   image:
     model: qwen-image-2.0-pro
+  omni:
+    model: qwen3.5-omni-plus
 ```
 
 `defaults.profile` 会先应用到所有能力，`brains.<name>` 只覆盖自己的差异字段。
@@ -35,6 +37,7 @@ brains:
 | `vision` | 图片/视频理解 | `qwen-vl-plus` |
 | `voice` | 语音合成/识别 | `cosyvoice-v3-flash` |
 | `image` | 图像生成/编辑 | `qwen-image-2.0-pro` |
+| `omni` | 全模态（音/视/图 + 文本，Qwen-Omni 兼容） | `qwen3.5-omni-plus` |
 
 可配置字段：
 
@@ -74,6 +77,10 @@ brains:
     model: cosyvoice-v3-flash
   image:
     model: qwen-image-2.0-pro
+  omni:
+    model: qwen3.5-omni-plus
 ```
 
 环境变量会自动展开，例如 `${DASHSCOPE_API_KEY}`。
+
+仓库内可参考同目录的 `llm.yaml.example`（无敏感信息，适合提交到 Git）。

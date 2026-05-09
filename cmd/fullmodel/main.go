@@ -19,6 +19,7 @@ import (
 	agenttools "github.com/xumi30/fullmodel/agent/tools"
 	"github.com/xumi30/fullmodel/processmessage"
 	"github.com/xumi30/fullmodel/utils/fileop"
+	"github.com/xumi30/fullmodel/utils/logging"
 )
 
 type messageRequest struct {
@@ -168,6 +169,9 @@ func serve(args []string) error {
 	mux.HandleFunc("POST /v1/voice/customizations", func(w http.ResponseWriter, r *http.Request) {
 		handleCreateVoiceCustomization(w, r, state)
 	})
+	mux.HandleFunc("POST /v1/voice/analyze-tags", func(w http.ResponseWriter, r *http.Request) {
+		handleVoiceAnalyzeTags(w, r, state)
+	})
 	mux.HandleFunc("DELETE /v1/voice/customizations/", func(w http.ResponseWriter, r *http.Request) {
 		handleDeleteVoiceCustomization(w, r, state)
 	})
@@ -176,6 +180,8 @@ func serve(args []string) error {
 	})
 
 	fmt.Printf("fullmodel api listening on http://%s\n", *addr)
+	fmt.Fprintf(os.Stdout, "fullmodel: runtime root %s\n", fileop.RuntimeRoot())
+	fmt.Fprintf(os.Stdout, "fullmodel: log file %s (same records mirrored to stdout)\n", logging.DefaultLogFilePath())
 	if strings.TrimSpace(*apiKey) != "" {
 		fmt.Fprintln(os.Stderr, "fullmodel: HTTP API key auth is on (from -api-key or FULLMODEL_API_KEY). WebSocket clients must send the same key (X-API-Key, Bearer, or ?api_key=).")
 	}
@@ -339,6 +345,19 @@ func buildMessage(req messageRequest, sessions agentruntime.SessionMemory) (proc
 	case processmessage.KindImageToVideo:
 		media, err := decodeMedia(req.Media.FirstFrame)
 		return processmessage.ImageToVideoMessage{Prompt: req.Prompt, FirstFrame: media}, opts, err
+	case processmessage.KindOmni:
+		om := processmessage.OmniMessage{Prompt: req.Prompt}
+		var err error
+		if om.Image, err = decodeMedia(req.Media.Image); err != nil {
+			return nil, opts, err
+		}
+		if om.Audio, err = decodeMedia(req.Media.Audio); err != nil {
+			return nil, opts, err
+		}
+		if om.Video, err = decodeMedia(req.Media.Video); err != nil {
+			return nil, opts, err
+		}
+		return om, opts, nil
 	default:
 		return nil, opts, fmt.Errorf("unsupported kind %q", req.Kind)
 	}
@@ -594,6 +613,15 @@ func authMiddleware(next http.Handler, apiKey string) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
+		trace := strings.TrimSpace(r.Header.Get("X-Client-Trace-Id"))
+		if trace == "" {
+			trace = strings.TrimSpace(r.Header.Get("X-Request-Id"))
+		}
+		if trace != "" {
+			w.Header().Set("X-Fullmodel-Trace-Id", trace)
+		}
+		logging.Warn("[http.auth] unauthorized path=%s method=%s trace=%q remote=%s has_x_api_key=%v",
+			r.URL.Path, r.Method, trace, r.RemoteAddr, r.Header.Get("X-API-Key") != "")
 		writeError(w, http.StatusUnauthorized, fmt.Errorf("unauthorized"))
 	})
 }
@@ -654,7 +682,11 @@ func printUsage() {
 	fmt.Print(`usage:
   fullmodel serve [-addr 127.0.0.1:8080] [-config config/llm.yaml]
     Voice: GET/POST /v1/voice/customizations, DELETE /v1/voice/customizations/{voice}
+    Voice tags (Omni): POST /v1/voice/analyze-tags (multipart field audio; needs llm.yaml brains.omni)
     WebSocket realtime TTS: GET ws://<addr>/v1/voice/tts/stream (optional query: voice, model, mode, format, sample_rate, ...)
+    Examples: go run ./examples/voice_clone_http_client -audio sample.mp3
+              go run ./examples/voice_analyze_http_client -synthetic
+              go run ./examples/voice_tts_ws_client -url ws://<addr>/v1/voice/tts/stream -text "你好"
   fullmodel run [-kind text] [-prompt "..."] [-stream]
 `)
 }

@@ -23,6 +23,10 @@ func NewRegistryFromConfigs(cfgs *fileop.BrainConfigs) (*Registry, error) {
 	if err != nil {
 		return nil, err
 	}
+	omniCfg, err := cfgs.Config(fileop.BrainConfigOmni)
+	if err != nil {
+		return nil, err
+	}
 
 	textBrain := brain.NewTextBrain(ToBrainConfig(textCfg))
 	visionBrain := brain.NewImageBrain(ToBrainConfig(visionCfg))
@@ -32,6 +36,7 @@ func NewRegistryFromConfigs(cfgs *fileop.BrainConfigs) (*Registry, error) {
 	imageEditBrain := brain.NewImageEditBrain(ToBrainConfig(imageCfg))
 	textVideoBrain := brain.NewVideoTextGenerateBrain(ToBrainConfig(imageCfg))
 	imageVideoBrain := brain.NewImage2VideoGenerateBrain(ToBrainConfig(imageCfg))
+	omniBrain := brain.NewOmniBrain(ToBrainConfig(omniCfg))
 
 	registry := NewRegistry()
 	registrations := []struct {
@@ -46,6 +51,7 @@ func NewRegistryFromConfigs(cfgs *fileop.BrainConfigs) (*Registry, error) {
 		{processmessage.KindImage, visionBrain, "Image understanding", "Analyze an image with a prompt", true},
 		{processmessage.KindVideo, visionBrain, "Video understanding", "Analyze a video with a prompt", true},
 		{processmessage.KindMultimodal, visionBrain, "Multimodal understanding", "Analyze explicit multimodal content parts", true},
+		{processmessage.KindOmni, omniBrain, "Omni multimodal", "Qwen-Omni: audio/image/video + text (DashScope compatible-mode, streaming)", true},
 		{processmessage.KindSpeechToText, asrBrain, "Speech to text", "Transcribe audio bytes", false},
 		{processmessage.KindTextToSpeech, voiceBrain, "Text to speech", "Synthesize audio from text", false},
 		{processmessage.KindImageGenerate, imageBrain, "Image generation", "Generate an image from a prompt", false},

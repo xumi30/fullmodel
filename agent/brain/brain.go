@@ -191,6 +191,8 @@ const (
 	BrainImage2VideoGenerate BrainMode = "image2video_generate"         // 图像生视频生成模式
 	BrainText2SpeechGenerate BrainMode = "text2speech_generate"         // 文本转语音生成模式
 	BrainVisualUnderstand    BrainMode = "visual_understand"            // 视觉理解模式
+	// BrainModeOmni 全模态（Qwen-Omni 等 OpenAI 兼容 + 音/视/图组合）
+	BrainModeOmni BrainMode = "omni_multimodal"
 )
 
 // Config 通用配置，支持多提供商

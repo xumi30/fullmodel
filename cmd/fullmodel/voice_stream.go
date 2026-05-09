@@ -52,6 +52,7 @@ func (w *wsConnWriter) writeBinary(p []byte) error {
 //
 //	{"op":"error","message":"..."}, {"op":"pong"}, {"op":"done"}
 func handleVoiceTTSStream(w http.ResponseWriter, r *http.Request, sdk *fullmodel.Client) {
+	start := time.Now()
 	if sdk == nil {
 		logging.Error("[voice.ws] reject sdk_nil")
 		http.Error(w, "voice client unavailable", http.StatusServiceUnavailable)
@@ -63,8 +64,9 @@ func handleVoiceTTSStream(w http.ResponseWriter, r *http.Request, sdk *fullmodel
 		logging.Warn("[voice.ws] upgrade_failed remote=%s err=%v", r.RemoteAddr, err)
 		return
 	}
-	logging.Info("[voice.ws] connected remote=%s path=%s query=%s", conn.RemoteAddr(), r.URL.Path, r.URL.RawQuery)
+	logging.Info("[voice.ws] phase=ws_upgrade_ok remote=%s path=%s query=%s", conn.RemoteAddr(), r.URL.Path, r.URL.RawQuery)
 	defer func() {
+		logging.Info("[voice.ws] phase=handler_done remote=%s elapsed=%s", conn.RemoteAddr(), time.Since(start).Truncate(time.Millisecond))
 		logging.Info("[voice.ws] client_conn_closed remote=%s", conn.RemoteAddr())
 		conn.Close()
 	}()
@@ -84,28 +86,35 @@ func handleVoiceTTSStream(w http.ResponseWriter, r *http.Request, sdk *fullmodel
 		Instructions:         strings.TrimSpace(q.Get("instructions")),
 		OptimizeInstructions: strings.EqualFold(q.Get("optimize_instructions"), "true") || q.Get("optimize_instructions") == "1",
 	}
-	logging.Info("[voice.ws] tts_config voice=%q model_query=%q mode=%s format=%s sample_rate=%d lang=%q instruct_len=%d",
-		cfg.Voice, cfg.Model, cfg.Mode, cfg.ResponseFormat, cfg.SampleRate, cfg.LanguageType, len(cfg.Instructions))
+	logging.Info("[voice.ws] phase=tts_config remote=%s voice=%q model_query=%q mode=%s format=%s sample_rate=%d lang=%q instruct_len=%d optimize_instr=%v",
+		conn.RemoteAddr(), cfg.Voice, cfg.Model, cfg.Mode, cfg.ResponseFormat, cfg.SampleRate, cfg.LanguageType, len(cfg.Instructions), cfg.OptimizeInstructions)
 
 	session, err := sdk.RealtimeTTS(ctx, cfg)
 	if err != nil {
-		logging.Error("[voice.ws] RealtimeTTS_failed remote=%s err=%v", conn.RemoteAddr(), err)
+		logging.Error("[voice.ws] phase=upstream_session_failed remote=%s elapsed=%s err=%v",
+			conn.RemoteAddr(), time.Since(start).Truncate(time.Millisecond), err)
 		_ = ww.writeJSON(map[string]any{"op": "error", "message": err.Error()})
 		return
 	}
-	defer session.Close()
+	logging.Info("[voice.ws] phase=upstream_session_ready remote=%s elapsed=%s", conn.RemoteAddr(), time.Since(start).Truncate(time.Millisecond))
+	defer func() {
+		logging.Info("[voice.ws] phase=upstream_session_close remote=%s", conn.RemoteAddr())
+		session.Close()
+	}()
 
 	pumpDone := make(chan struct{})
+	logging.Info("[voice.ws] phase=pump_start remote=%s", conn.RemoteAddr())
 	go pumpRealtimeTTS(ctx, session, ww, pumpDone, conn.RemoteAddr().String())
 
 	readErr := readTTSClientOps(ctx, session, cfg.Mode, ww)
 	if readErr != nil {
-		logging.Warn("[voice.ws] read_ops_done remote=%s err=%v", conn.RemoteAddr(), readErr)
+		logging.Warn("[voice.ws] phase=read_ops_done remote=%s err=%v elapsed=%s", conn.RemoteAddr(), readErr, time.Since(start).Truncate(time.Millisecond))
 		cancel()
 	} else {
-		logging.Info("[voice.ws] read_ops_finished remote=%s (finish_op_ok)", conn.RemoteAddr())
+		logging.Info("[voice.ws] phase=read_ops_ok remote=%s finish_op_ok elapsed=%s", conn.RemoteAddr(), time.Since(start).Truncate(time.Millisecond))
 	}
 	<-pumpDone
+	logging.Info("[voice.ws] phase=pump_joined remote=%s elapsed=%s", conn.RemoteAddr(), time.Since(start).Truncate(time.Millisecond))
 
 	if readErr != nil && !websocket.IsCloseError(readErr, websocket.CloseGoingAway, websocket.CloseNormalClosure, websocket.CloseNoStatusReceived) {
 		logging.Warn("[voice.ws] write_client_error remote=%s err=%v", conn.RemoteAddr(), readErr)
@@ -118,10 +127,11 @@ func pumpRealtimeTTS(ctx context.Context, session *fullmodel.RealtimeTTSSession,
 	var audioChunks int
 	var audioBytes int64
 	defer func() {
-		logging.Info("[voice.ws] pump_exit remote=%s audio_chunks=%d audio_bytes=%d ctx_done=%v",
+		logging.Info("[voice.ws] phase=pump_exit remote=%s audio_chunks=%d audio_bytes=%d ctx_done=%v",
 			remote, audioChunks, audioBytes, ctx.Err() != nil)
 		close(done)
 	}()
+	logging.Info("[voice.ws] phase=pump_run remote=%s", remote)
 	for {
 		select {
 		case <-ctx.Done():
@@ -129,12 +139,12 @@ func pumpRealtimeTTS(ctx context.Context, session *fullmodel.RealtimeTTSSession,
 			return
 		case ev, ok := <-session.Events():
 			if !ok {
-				logging.Info("[voice.ws] pump_events_closed remote=%s", remote)
+				logging.Info("[voice.ws] phase=pump_events_chan_closed remote=%s", remote)
 				_ = ww.writeJSON(map[string]any{"op": "done"})
 				return
 			}
 			if ev.Error != "" {
-				logging.Error("[voice.ws] pump_upstream_err remote=%s code=%s msg=%s", remote, ev.ErrorCode, ev.Error)
+				logging.Error("[voice.ws] phase=pump_upstream_err remote=%s code=%s msg=%s", remote, ev.ErrorCode, ev.Error)
 				_ = ww.writeJSON(map[string]any{"op": "error", "message": ev.Error, "error_code": ev.ErrorCode})
 				return
 			}
@@ -142,6 +152,9 @@ func pumpRealtimeTTS(ctx context.Context, session *fullmodel.RealtimeTTSSession,
 				if len(ev.Audio) > 0 {
 					audioChunks++
 					audioBytes += int64(len(ev.Audio))
+					if audioChunks == 1 {
+						logging.Info("[voice.ws] phase=first_audio_to_client remote=%s chunk_bytes=%d", remote, len(ev.Audio))
+					}
 					if audioChunks == 1 || audioChunks%100 == 0 {
 						logging.Info("[voice.ws] pump_audio_progress remote=%s chunks=%d bytes_total=%d last_chunk=%d",
 							remote, audioChunks, audioBytes, len(ev.Audio))
@@ -162,7 +175,7 @@ func pumpRealtimeTTS(ctx context.Context, session *fullmodel.RealtimeTTSSession,
 				return
 			}
 			if ev.Type == "session.finished" {
-				logging.Info("[voice.ws] pump_session_finished remote=%s", remote)
+				logging.Info("[voice.ws] phase=pump_session_finished remote=%s", remote)
 				_ = ww.writeJSON(map[string]any{"op": "done"})
 				return
 			}

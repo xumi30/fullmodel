@@ -19,6 +19,8 @@ const (
 	BrainConfigVision BrainConfigKind = "vision"
 	BrainConfigVoice  BrainConfigKind = "voice"
 	BrainConfigImage  BrainConfigKind = "image"
+	// BrainConfigOmni 全模态理解（百炼 Qwen-Omni 等 compatible-mode）
+	BrainConfigOmni BrainConfigKind = "omni"
 )
 
 var brainConfigDefaults = map[BrainConfigKind]ModelConfig{
@@ -42,6 +44,11 @@ var brainConfigDefaults = map[BrainConfigKind]ModelConfig{
 		Region:   "cn-beijing",
 		Model:    "qwen-image-2.0-pro",
 	},
+	BrainConfigOmni: {
+		Provider: "qwen",
+		Region:   "cn-beijing",
+		Model:    "qwen3.5-omni-plus",
+	},
 }
 
 // BrainConfigs mirrors the simple config/llm.yaml shape:
@@ -62,6 +69,8 @@ var brainConfigDefaults = map[BrainConfigKind]ModelConfig{
 //	    model: cosyvoice-v3-flash
 //	  image:
 //	    model: qwen-image-2.0-pro
+//	  omni:
+//	    model: qwen3.5-omni-plus
 type BrainConfigs struct {
 	Defaults ModelConfig                     `yaml:"defaults" json:"defaults"`
 	Profiles map[string]ModelConfig          `yaml:"profiles" json:"profiles"`
@@ -125,6 +134,10 @@ func LoadVoiceBrainConfig() (*ModelConfig, error) {
 
 func LoadImageGenerateBrainConfig() (*ModelConfig, error) {
 	return LoadBrainConfig(BrainConfigImage)
+}
+
+func LoadOmniBrainConfig() (*ModelConfig, error) {
+	return LoadBrainConfig(BrainConfigOmni)
 }
 
 func DefaultLLMConfigPath() string {

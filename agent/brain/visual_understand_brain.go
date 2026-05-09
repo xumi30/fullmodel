@@ -195,6 +195,32 @@ func (ib *ImageBrain) buildUserContent(input *BrainInput) ([]any, error) {
 				}
 				content = append(content, item)
 			}
+		case "input_audio":
+			if p.Audio != nil && strings.TrimSpace(p.Audio.Data) != "" {
+				format := strings.TrimSpace(p.Audio.Format)
+				if format == "" {
+					format = audioFormatForAPI("", p.Audio.Data)
+				}
+				content = append(content, map[string]any{
+					"type": "input_audio",
+					"input_audio": map[string]any{
+						"data":   p.Audio.Data,
+						"format": format,
+					},
+				})
+			}
+		case "audio_data":
+			if p.AudioData != nil && len(p.AudioData.Data) > 0 {
+				url := ib.buildDataURL(p.AudioData.MimeType, p.AudioData.Data)
+				format := audioFormatForAPI(p.AudioData.MimeType, "")
+				content = append(content, map[string]any{
+					"type": "input_audio",
+					"input_audio": map[string]any{
+						"data":   url,
+						"format": format,
+					},
+				})
+			}
 		default:
 			// 其他类型（audio 等）这里不处理
 		}
@@ -250,8 +276,32 @@ func (ib *ImageBrain) buildUserContent(input *BrainInput) ([]any, error) {
 		content = append(content, item)
 	}
 
+	// e2) 音频 URL / 二进制（Qwen-Omni / 兼容 input_audio）
+	if strings.TrimSpace(input.Media.Audio.URL) != "" {
+		u := strings.TrimSpace(input.Media.Audio.URL)
+		format := audioFormatForAPI(input.Media.Audio.MimeType, u)
+		content = append(content, map[string]any{
+			"type": "input_audio",
+			"input_audio": map[string]any{
+				"data":   u,
+				"format": format,
+			},
+		})
+	}
+	if len(input.Media.Audio.Data) > 0 {
+		url := ib.buildDataURL(input.Media.Audio.MimeType, input.Media.Audio.Data)
+		format := audioFormatForAPI(input.Media.Audio.MimeType, "")
+		content = append(content, map[string]any{
+			"type": "input_audio",
+			"input_audio": map[string]any{
+				"data":   url,
+				"format": format,
+			},
+		})
+	}
+
 	if len(content) == 0 {
-		return nil, fmt.Errorf("no vision input provided (need image/video url/data or multimodal_parts)")
+		return nil, fmt.Errorf("no multimodal input provided (need image/video/audio url/data or multimodal_parts)")
 	}
 
 	// f) 文本提示放最后（若为空，给一个默认提示）
@@ -259,6 +309,8 @@ func (ib *ImageBrain) buildUserContent(input *BrainInput) ([]any, error) {
 	if text == "" {
 		if ib.outputMode(input) == BrainModeVideoUnderstand {
 			text = "请描述这段视频的内容，并回答我关于视频的问题。"
+		} else if strings.TrimSpace(input.Media.Audio.URL) != "" || len(input.Media.Audio.Data) > 0 {
+			text = "请根据这段音频回答问题。"
 		} else {
 			text = "请描述图片内容，并回答我关于图片的问题。"
 		}
@@ -326,4 +378,42 @@ func extractFPS(extra map[string]any) (float64, bool) {
 		}
 	}
 	return 0, false
+}
+
+func audioFormatForAPI(mime, urlOrData string) string {
+	m := strings.ToLower(strings.TrimSpace(mime))
+	switch {
+	case strings.Contains(m, "wav"):
+		return "wav"
+	case strings.Contains(m, "mpeg"), strings.Contains(m, "mp3"):
+		return "mp3"
+	case strings.Contains(m, "mpeg4"), strings.Contains(m, "m4a"):
+		return "mp4"
+	case strings.Contains(m, "mp4"):
+		return "mp4"
+	case strings.Contains(m, "webm"):
+		return "webm"
+	case strings.Contains(m, "ogg"), strings.Contains(m, "opus"):
+		return "opus"
+	case strings.Contains(m, "aac"):
+		return "aac"
+	case strings.Contains(m, "amr"):
+		return "amr"
+	case strings.Contains(m, "3gp"):
+		return "3gp"
+	}
+	s := strings.ToLower(urlOrData)
+	switch {
+	case strings.HasSuffix(s, ".mp3"):
+		return "mp3"
+	case strings.HasSuffix(s, ".wav"):
+		return "wav"
+	case strings.HasSuffix(s, ".m4a"):
+		return "mp4"
+	case strings.HasSuffix(s, ".mp4"):
+		return "mp4"
+	case strings.HasPrefix(s, "http://"), strings.HasPrefix(s, "https://"):
+		return "wav"
+	}
+	return "wav"
 }

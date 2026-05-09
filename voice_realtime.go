@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/gorilla/websocket"
 	"github.com/xumi30/fullmodel/agent/brain"
@@ -43,11 +44,12 @@ type VoiceCloneRequest struct {
 }
 
 type VoiceCloneResult struct {
-	Voice       string         `json:"voice,omitempty"`
-	TargetModel string         `json:"target_model,omitempty"`
-	RequestID   string         `json:"request_id,omitempty"`
-	Usage       map[string]any `json:"usage,omitempty"`
-	Raw         map[string]any `json:"raw,omitempty"`
+	Voice        string         `json:"voice,omitempty"`
+	TargetModel  string         `json:"target_model,omitempty"`
+	RequestID    string         `json:"request_id,omitempty"`
+	Usage        map[string]any `json:"usage,omitempty"`
+	AnalysisTags []string       `json:"analysis_tags,omitempty"`
+	Raw          map[string]any `json:"raw,omitempty"`
 }
 
 type VoiceListRequest struct {
@@ -137,13 +139,78 @@ func (c *Client) CloneVoice(ctx context.Context, req VoiceCloneRequest) (*VoiceC
 	}
 	outMap, _ := raw["output"].(map[string]any)
 	result := &VoiceCloneResult{
-		Voice:       stringValue(outMap["voice"]),
-		TargetModel: stringValue(outMap["target_model"]),
-		RequestID:   stringValue(raw["request_id"]),
-		Usage:       mapValue(raw["usage"]),
-		Raw:         raw,
+		Voice:        stringValue(outMap["voice"]),
+		TargetModel:  stringValue(outMap["target_model"]),
+		RequestID:    stringValue(raw["request_id"]),
+		Usage:        mapValue(raw["usage"]),
+		AnalysisTags: ParseVoiceCloneAnalysisTags(raw),
+		Raw:          raw,
 	}
 	return result, nil
+}
+
+// ParseVoiceCloneAnalysisTags extracts optional descriptive tags from the voice
+// customization JSON body (typically raw["output"]). The official DashScope
+// enrollment API currently documents only voice and target_model in output;
+// this helper is forward-compatible if the service or a gateway adds keys such
+// as tags, labels, or analysis_tags. It does not call third-party products or fabricate tags.
+func ParseVoiceCloneAnalysisTags(raw map[string]any) []string {
+	if raw == nil {
+		return nil
+	}
+	out := mapValue(raw["output"])
+	if out == nil {
+		return nil
+	}
+	keys := []string{
+		"analysis_tags",
+		"tags",
+		"labels",
+		"voice_tags",
+		"quality_tags",
+		"descriptions",
+	}
+	seen := map[string]struct{}{}
+	var collected []string
+	for _, k := range keys {
+		for _, s := range stringListFromAny(out[k]) {
+			s = strings.TrimSpace(s)
+			if s == "" {
+				continue
+			}
+			if _, ok := seen[s]; ok {
+				continue
+			}
+			seen[s] = struct{}{}
+			collected = append(collected, s)
+		}
+	}
+	return collected
+}
+
+func stringListFromAny(v any) []string {
+	if v == nil {
+		return nil
+	}
+	switch x := v.(type) {
+	case string:
+		if strings.TrimSpace(x) == "" {
+			return nil
+		}
+		return []string{x}
+	case []string:
+		return x
+	case []any:
+		var out []string
+		for _, it := range x {
+			if s, ok := it.(string); ok {
+				out = append(out, s)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
 }
 
 func (c *Client) ListVoices(ctx context.Context, req VoiceListRequest) (*VoiceListResult, error) {
@@ -209,6 +276,9 @@ func (c *Client) RealtimeTTS(ctx context.Context, cfg RealtimeTTSConfig) (*Realt
 	if model == "" || !strings.Contains(strings.ToLower(model), "realtime") {
 		model = QwenTTSFlashRealtimeModel
 	}
+	logging.Info("[voice.realtime_tts] phase=begin effective_model=%s voice=%s mode=%s format=%s sample_rate=%d region=%s",
+		model, defaultString(cfg.Voice, "Cherry"), defaultString(cfg.Mode, QwenRealtimeModeServerCommit),
+		defaultString(cfg.ResponseFormat, "pcm"), defaultInt(cfg.SampleRate, 24000), c.voiceConfig.Region)
 
 	conn, err := c.dialVoiceWS(ctx, "tts_realtime_ws", "wss://dashscope.aliyuncs.com/api-ws/v1/realtime", "wss://dashscope-intl.aliyuncs.com/api-ws/v1/realtime", model)
 	if err != nil {
@@ -245,7 +315,7 @@ func (c *Client) RealtimeTTS(ctx context.Context, cfg RealtimeTTSConfig) (*Realt
 		_ = s.Close()
 		return nil, err
 	}
-	logging.Info("[voice.realtime_tts] session.update sent model=%s voice=%s mode=%s sample_rate=%v format=%s lang=%s",
+	logging.Info("[voice.realtime_tts] phase=session_update_sent model=%s voice=%s mode=%s sample_rate=%v format=%s lang=%s",
 		model, update["voice"], update["mode"], update["sample_rate"], update["response_format"], update["language_type"])
 	return s, nil
 }
@@ -291,8 +361,13 @@ func (s *RealtimeTTSSession) Events() <-chan RealtimeEvent { return s.events }
 func (s *RealtimeTTSSession) Audio() <-chan []byte { return s.audio }
 
 func (s *RealtimeTTSSession) Close() error {
+	logging.Info("[voice.realtime_tts] phase=session_close")
 	s.cancel()
-	return s.conn.Close()
+	err := s.conn.Close()
+	if err != nil {
+		logging.Warn("[voice.realtime_tts] session_close_ws err=%v", err)
+	}
+	return err
 }
 
 func (s *RealtimeTTSSession) CollectAudio(ctx context.Context) ([]byte, error) {
@@ -326,17 +401,24 @@ func (s *RealtimeTTSSession) send(eventType string, body map[string]any) error {
 	for k, v := range body {
 		msg[k] = v
 	}
-	logging.Info("[voice.realtime_tts] client_send type=%s seq=%d", eventType, s.seq)
+	logging.Info("[voice.realtime_tts] client_send type=%s seq=%d event_id=%s", eventType, s.seq, msg["event_id"])
 	return s.conn.WriteJSON(msg)
 }
 
 func (s *RealtimeTTSSession) readLoop() {
+	var exitReason string
+	var audioDeltas int64
+	defer func() {
+		logging.Info("[voice.realtime_tts] phase=readLoop_exit reason=%s upstream_audio_deltas=%d", exitReason, atomic.LoadInt64(&audioDeltas))
+	}()
 	defer close(s.done)
 	defer close(s.events)
 	defer close(s.audio)
+	logging.Info("[voice.realtime_tts] phase=readLoop_start")
 	for {
 		msgType, data, err := s.conn.ReadMessage()
 		if err != nil {
+			exitReason = "ws_read_error"
 			logging.Warn("[voice.realtime_tts] readLoop read_error err=%v", err)
 			select {
 			case <-s.ctx.Done():
@@ -362,6 +444,7 @@ func (s *RealtimeTTSSession) readLoop() {
 		if errMap := mapValue(raw["error"]); len(errMap) > 0 {
 			ev.ErrorCode = stringValue(errMap["code"])
 			ev.Error = stringValue(errMap["message"])
+			exitReason = "upstream_error_event"
 			logging.Error("[voice.realtime_tts] upstream_error code=%s message=%s", ev.ErrorCode, ev.Error)
 			select {
 			case s.events <- ev:
@@ -374,12 +457,25 @@ func (s *RealtimeTTSSession) readLoop() {
 			return
 		}
 		if ev.Type == "response.audio.delta" {
-			chunk, err := base64.StdEncoding.DecodeString(stringValue(raw["delta"]))
-			if err == nil && len(chunk) > 0 {
+			deltaB64 := stringValue(raw["delta"])
+			chunk, err := base64.StdEncoding.DecodeString(deltaB64)
+			if err != nil {
+				logging.Warn("[voice.realtime_tts] audio_delta_b64_decode_failed err=%v delta_len=%d preview=%s",
+					err, len(deltaB64), voiceLogPreview(deltaB64, 48))
+			} else if len(chunk) == 0 {
+				logging.Warn("[voice.realtime_tts] audio_delta_empty_after_decode delta_len=%d", len(deltaB64))
+			} else {
+				n := atomic.AddInt64(&audioDeltas, 1)
+				if n == 1 {
+					logging.Info("[voice.realtime_tts] phase=first_upstream_audio_delta bytes=%d", len(chunk))
+				} else if n%100 == 0 {
+					logging.Info("[voice.realtime_tts] upstream_audio_delta_progress deltas=%d last_chunk_bytes=%d", n, len(chunk))
+				}
 				ev.Audio = chunk
 				select {
 				case s.audio <- chunk:
 				case <-s.ctx.Done():
+					exitReason = "ctx_done_while_sending_audio"
 					return
 				}
 			}
@@ -387,10 +483,12 @@ func (s *RealtimeTTSSession) readLoop() {
 		select {
 		case s.events <- ev:
 		case <-s.ctx.Done():
+			exitReason = "ctx_done_while_dispatch"
 			return
 		}
 		if ev.Type == "session.finished" {
-			logging.Info("[voice.realtime_tts] readLoop session.finished")
+			exitReason = "session.finished"
+			logging.Info("[voice.realtime_tts] phase=upstream_session_finished_event")
 			return
 		}
 	}
@@ -666,6 +764,7 @@ func (c *Client) dialVoiceWS(ctx context.Context, endpointKey, cnURL, intlURL, a
 		}
 		return nil, err
 	}
+	logging.Info("[voice.ws] phase=dial_ok endpoint_key=%s proto=%s", endpointKey, conn.Subprotocol())
 	return conn, err
 }
 

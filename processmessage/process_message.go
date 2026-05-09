@@ -23,6 +23,8 @@ const (
 	KindTextToVideo   Kind = "text_to_video"
 	KindImageToVideo  Kind = "image_to_video"
 	KindMultimodal    Kind = "multimodal"
+	// KindOmni 全模态（Qwen-Omni：compatible-mode 音/视/图 + 文本，流式）
+	KindOmni Kind = "omni"
 )
 
 // Message 是 processmessage 包对外的统一消息接口。
@@ -125,6 +127,10 @@ func (p *DefaultProcessor) BuildInput(message Message, options Options) (*brain.
 		applyMultimodalMessage(input, msg)
 	case *MultimodalMessage:
 		applyMultimodalMessage(input, *msg)
+	case OmniMessage:
+		applyOmniMessage(input, msg)
+	case *OmniMessage:
+		applyOmniMessage(input, *msg)
 	default:
 		return nil, fmt.Errorf("unsupported message type %T", message)
 	}
@@ -258,6 +264,19 @@ type MultimodalMessage struct {
 
 func (MultimodalMessage) MessageKind() Kind { return KindMultimodal }
 
+// OmniMessage 表示 Qwen-Omni 类全模态请求（音频/图像/视频可组合）。
+// 若填充 Messages，则由调用方保证内容为兼容 OpenAI 的多模态数组；否则用 Prompt + Media + Parts 自动拼装一条 user。
+type OmniMessage struct {
+	Prompt   string
+	Image    brain.MediaResource
+	Audio    brain.MediaResource
+	Video    brain.MediaResource
+	Parts    []brain.ContentPart
+	Messages []brain.Message
+}
+
+func (OmniMessage) MessageKind() Kind { return KindOmni }
+
 func newInput(kind Kind, options Options) *brain.BrainInput {
 	ctx := options.Context
 	if ctx == nil {
@@ -297,6 +316,8 @@ func modeForKind(kind Kind) brain.BrainMode {
 		return brain.BrainImage2VideoGenerate
 	case KindMultimodal:
 		return brain.BrainModeMultimodal
+	case KindOmni:
+		return brain.BrainModeOmni
 	default:
 		return brain.BrainModeText
 	}
@@ -403,6 +424,24 @@ func applyMultimodalMessage(input *brain.BrainInput, message MultimodalMessage) 
 	input.Media.Parts = append(input.Media.Parts, message.Parts...)
 }
 
+func applyOmniMessage(input *brain.BrainInput, message OmniMessage) {
+	input.Mode = brain.BrainModeOmni
+	if len(message.Messages) > 0 {
+		input.Messages = message.Messages
+	}
+	input.Prompt = message.Prompt
+	if hasMedia(message.Image) {
+		input.Media.Image = message.Image
+	}
+	if hasMedia(message.Audio) {
+		input.Media.Audio = message.Audio
+	}
+	if hasMedia(message.Video) {
+		input.Media.Video = message.Video
+	}
+	input.Media.Parts = append(input.Media.Parts, message.Parts...)
+}
+
 func validateInput(input *brain.BrainInput, kind Kind) error {
 	switch kind {
 	case KindText:
@@ -439,6 +478,13 @@ func validateInput(input *brain.BrainInput, kind Kind) error {
 	case KindMultimodal:
 		if strings.TrimSpace(input.Prompt) == "" && len(input.Media.Parts) == 0 {
 			return fmt.Errorf("multimodal message requires prompt or parts")
+		}
+	case KindOmni:
+		if len(input.Messages) == 0 {
+			has := hasMedia(input.Media.Image) || hasMedia(input.Media.Audio) || hasMedia(input.Media.Video) || len(input.Media.Parts) > 0
+			if !has {
+				return fmt.Errorf("omni message requires at least one media field (image, audio, video) or parts")
+			}
 		}
 	}
 	return nil

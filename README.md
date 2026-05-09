@@ -61,6 +61,8 @@ brains:
     model: cosyvoice-v3-flash
   image:
     model: qwen-image-2.0-pro
+  omni:
+    model: qwen3.5-omni-plus
 ```
 
 设置环境变量：
@@ -801,6 +803,8 @@ brains:
     model: cosyvoice-v3-flash
   image:
     model: qwen-image-2.0-pro
+  omni:
+    model: qwen3.5-omni-plus
 ```
 
 每个 brain 都可以覆盖 `profile`、`api_key`、`provider`、`region`、`base_url`、`model`、`endpoints`。
@@ -830,6 +834,8 @@ brains:
     model: cosyvoice-v3-flash
   image:
     model: qwen-image-2.0-pro
+  omni:
+    model: qwen3.5-omni-plus
 ```
 
 ## 扩展自己的应用能力
