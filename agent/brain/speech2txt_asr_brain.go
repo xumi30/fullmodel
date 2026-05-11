@@ -6,11 +6,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/xumi30/fullmodel/utils/logging"
 )
 
 // Speech2TxtASRBrain 实时语音识别（Fun-ASR WebSocket）
@@ -147,7 +149,8 @@ func (b *Speech2TxtASRBrain) ProcessInput(input *BrainInput) (*BrainOutput, erro
 			}
 			var ev funASREvent
 			if err := json.Unmarshal(msg, &ev); err != nil {
-				// 非法消息直接忽略
+				logging.Warn("[brain.asr] skip_invalid_json_event bytes=%d err=%v preview=%s",
+					len(msg), err, logging.TruncateRunes(string(msg), 240))
 				continue
 			}
 			events <- ev
@@ -268,6 +271,7 @@ func (b *Speech2TxtASRBrain) ProcessInput(input *BrainInput) (*BrainOutput, erro
 				if ev.Header.ErrorCode != "" {
 					msg = fmt.Sprintf("%s: %s", ev.Header.ErrorCode, msg)
 				}
+				logging.Error("[brain.asr] task_failed detail=%s", logging.CompactJSONForLog(ev, 12000))
 				return brainErrorWithMetadata(msg, map[string]any{"task_id": taskID}), fmt.Errorf("%s", msg)
 			}
 		}
@@ -298,6 +302,7 @@ func (b *Speech2TxtASRBrain) waitEvent(ctx context.Context, events <-chan funASR
 				if ev.Header.ErrorCode != "" {
 					msg = fmt.Sprintf("%s: %s", ev.Header.ErrorCode, msg)
 				}
+				logging.Error("[brain.asr] wait_event task_failed want=%s detail=%s", want, logging.CompactJSONForLog(ev, 12000))
 				return fmt.Errorf("%s", msg)
 			}
 		}
@@ -309,8 +314,31 @@ func (b *Speech2TxtASRBrain) dial(ctx context.Context) (*websocket.Conn, error) 
 	// 文档示例使用 bearer（小写）也可，服务端一般大小写不敏感
 	h.Set("Authorization", fmt.Sprintf("bearer %s", b.config.APIKey))
 	h.Set("User-Agent", "PeopleAgent/1.0")
-	conn, _, err := b.dialer.DialContext(ctx, b.getWSURL(), h)
+	conn, resp, err := b.dialer.DialContext(ctx, b.getWSURL(), h)
+	if err != nil && resp != nil && resp.Body != nil {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 16384))
+		_ = resp.Body.Close()
+		logging.Error("[brain.asr] dial_failed err=%v detail=%s", err,
+			logging.CompactJSONForLog(map[string]any{"http_status": resp.Status, "body": string(body)}, 12000))
+	}
 	return conn, err
+}
+
+// DialUpstream 打开 DashScope Fun-ASR 双工推理 WebSocket（与本 Brain ProcessInput 内共用 dial 逻辑）。
+func (b *Speech2TxtASRBrain) DialUpstream(ctx context.Context) (*websocket.Conn, error) {
+	return b.dial(ctx)
+}
+
+// ResolvedASRModel 返回配置的 ASR model；未配置时使用 fun-asr-realtime。
+func (b *Speech2TxtASRBrain) ResolvedModel() string {
+	model := ""
+	if b != nil && b.config != nil {
+		model = strings.TrimSpace(b.config.Model)
+	}
+	if model == "" {
+		return "fun-asr-realtime"
+	}
+	return model
 }
 
 func (b *Speech2TxtASRBrain) getWSURL() string {

@@ -299,7 +299,7 @@ func (c *Client) StreamText(ctx context.Context, text string, opts ...RunOption)
 	opts = append(opts, WithStream(true), WithRuntimeTools(false))
 	result, err := c.Run(ctx, processmessage.TextMessage{Text: text}, opts...)
 	if err != nil {
-		logging.Error("sdk StreamText run failed: %v", err)
+		logging.Error("sdk StreamText run failed err=%v", err)
 		return nil, err
 	}
 	if result == nil || result.Output == nil {
@@ -307,13 +307,13 @@ func (c *Client) StreamText(ctx context.Context, text string, opts ...RunOption)
 		return nil, nil
 	}
 	if result.Output.Stream == nil {
-		logging.Warn("sdk StreamText got nil stream mode=%s success=%v error=%q text_len=%d choices=%d",
-			result.Output.Mode,
-			result.Output.Status.Success,
-			result.Output.Status.Error,
-			len(result.Output.Content.Text),
-			len(result.Output.Choices),
-		)
+		logging.Warn("sdk StreamText got nil stream detail=%s", logging.CompactJSONForLog(map[string]any{
+			"mode":     result.Output.Mode,
+			"success":  result.Output.Status.Success,
+			"error":    result.Output.Status.Error,
+			"text_len": len(result.Output.Content.Text),
+			"choices":  len(result.Output.Choices),
+		}, 6000))
 		return nil, nil
 	}
 	logging.Info("sdk StreamText stream ready mode=%s success=%v choices=%d", result.Output.Mode, result.Output.Status.Success, len(result.Output.Choices))

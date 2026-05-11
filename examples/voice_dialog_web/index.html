@@ -1,0 +1,972 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>FullModel 语音闭环测试（三接口 · 可选单 WS）</title>
+  <style>
+    :root { font-family: system-ui, sans-serif; color: #1a1a1a; background: #f5f6f8; }
+    body { max-width: 46rem; margin: 2rem auto; padding: 0 1rem; line-height: 1.55; }
+    h1 { font-size: 1.25rem; margin-bottom: 0.75rem; }
+    fieldset { border: 1px solid #d8dde4; border-radius: 8px; padding: 0.75rem 1rem; margin-bottom: 1rem; background: #fff; }
+    label { display: grid; gap: 0.25rem; margin-bottom: 0.75rem; font-size: 0.85rem; }
+    input[type="text"] { width: 100%; padding: 0.4rem 0.5rem; border: 1px solid #c8cfda; border-radius: 6px; }
+    .btns { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; margin-bottom: 0.75rem; }
+    button {
+      cursor: pointer; border: none; border-radius: 6px;
+      padding: 0.45rem 0.85rem; font-size: 0.9rem;
+    }
+    button:disabled { opacity: 0.45; cursor: not-allowed; }
+    button.primary { background: #2563eb; color: #fff; }
+    button.danger { background: #dc2626; color: #fff; }
+    button.secondary { background: #e5e9f2; color: #1a1a1a; }
+    #log {
+      white-space: pre-wrap;
+      word-break: break-word;
+      background: #0f172a; color: #e2e8f0;
+      border-radius: 8px;
+      padding: 0.75rem 1rem;
+      font-size: 0.82rem;
+      min-height: 12rem;
+      max-height: 22rem;
+      overflow: auto;
+    }
+    .hint { font-size: 0.8rem; color: #556; margin-bottom: 0.75rem; }
+    .outbox { font-size: 0.82rem; background: #f1f5f9; border-radius: 6px; padding: 0.5rem 0.65rem; margin-bottom: 0.65rem; min-height: 2.4rem; }
+    .mode-row label { display: inline-flex; align-items: center; gap: 0.35rem; margin-right: 1rem; }
+    audio { width: 100%; margin-top: 0.75rem; }
+  </style>
+</head>
+<body>
+  <h1>语音一轮对话 · 测试页</h1>
+  <p class="hint">
+    <strong>Serve：</strong><code>go run ./cmd/fullmodel serve -addr 127.0.0.1:8080</code><br/>
+    <strong>静态页：</strong>本目录 <code>python3 -m http.server 8765</code> → 打开 <code>http://127.0.0.1:8765/</code><br/>
+   麦克风录成 <strong>16kHz mono WAV</strong>。<br/>
+    <strong>模式 C（推荐）</strong>：录音时 <code>GET /v1/voice/asr/stream</code> WebSocket 边收边下发 <code>partial</code>；停录后下发 <code>final</code> → 立刻 <code>/v1/messages</code> SSE 流式对话 → <code>/v1/voice/tts/stream</code> PCM。<br/>
+    <strong>模式 A</strong>：本轮录完后一次性 REST multipart STT → 再 SSE Chat → WS TTS。<br/>
+    <strong>模式 B</strong>：<code>/v1/voice/dialog/stream</code> 单 WebSocket。<br/>
+    若开启了 API Key：三接口时在下面填 Key；对话框 WebSocket 可在 URL 加 <code>&amp;api_key=</code>（浏览器无法在 WS 手写 Header）。
+  </p>
+
+  <fieldset>
+    <legend>模式</legend>
+    <div class="mode-row">
+      <label><input type="radio" name="runMode" value="chain" checked /> C · 流式识别 UI + 完成后 LLM SSE + WS TTS</label>
+      <label><input type="radio" name="runMode" value="triple" /> A · 整段 multipart STT → SSE → WS TTS</label>
+      <label><input type="radio" name="runMode" value="dialog" /> B · 单 WebSocket <code>/v1/voice/dialog/stream</code></label>
+    </div>
+  </fieldset>
+
+  <fieldset id="tripleFields">
+    <legend>REST / WS 基地址（模式 A / C）</legend>
+    <label>
+      HTTP 基 URL（不带路径）
+      <input type="text" id="httpBase" spellcheck="false" value="http://127.0.0.1:8080" />
+    </label>
+    <label>
+      API Key（可选；随 <code>X-API-Key</code>）
+      <input type="text" id="httpApiKey" spellcheck="false" placeholder="可与 FULLMODEL_API_KEY 一致" autocomplete="off" />
+    </label>
+    <label>
+      TTS 音色 voice（query）
+      <input type="text" id="tripleVoice" spellcheck="false" value="Cherry" />
+    </label>
+    <label>
+      本轮对话 system（塞进 Chat JSON）
+      <input type="text" id="systemPrompt" spellcheck="false" value="请用简短自然的口语中文回答用户。" />
+    </label>
+  </fieldset>
+
+  <fieldset id="dialogFields" style="display:none;">
+    <legend>WebSocket（模式 B）</legend>
+    <label>
+      WebSocket URL
+      <input type="text" id="wsUrl" spellcheck="false" value="ws://127.0.0.1:8080/v1/voice/dialog/stream?voice=Cherry" />
+    </label>
+    <div class="btns">
+      <button type="button" class="primary" id="btnConnect">连接</button>
+      <button type="button" class="danger" id="btnDisconnect" disabled>断开</button>
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>一轮发音 → 闭环</legend>
+    <div class="btns">
+      <button type="button" class="secondary" id="btnStart" disabled>开始录音</button>
+      <button type="button" class="primary" id="btnStopPipeline" disabled>停止并跑本轮闭环</button>
+      <button type="button" class="secondary" id="btnPing" disabled>Ping（仅模式 B）</button>
+    </div>
+    <p class="hint" id="recState">模式 A：填好 HTTP 基 URL 后直接可录音；模式 B：先连接。</p>
+    <div class="outbox"><strong>STT / user</strong><div id="outUser"></div></div>
+    <div class="outbox"><strong>LLM streaming</strong><div id="outLlm"></div></div>
+  </fieldset>
+
+  <fieldset>
+    <legend>TTS 回复 PCM → 播放</legend>
+    <audio id="player" controls></audio>
+  </fieldset>
+
+  <h2 style="font-size:1rem;">日志</h2>
+  <div id="log"></div>
+
+  <script>
+    const TARGET_SR = 16000;
+    const TTS_SR = 24000;
+
+    const logEl = document.getElementById("log");
+    const tripleFields = document.getElementById("tripleFields");
+    const dialogFields = document.getElementById("dialogFields");
+    const httpBaseEl = document.getElementById("httpBase");
+    const httpApiKeyEl = document.getElementById("httpApiKey");
+    const tripleVoiceEl = document.getElementById("tripleVoice");
+    const systemPromptEl = document.getElementById("systemPrompt");
+    const wsUrlEl = document.getElementById("wsUrl");
+    const btnConnect = document.getElementById("btnConnect");
+    const btnDisconnect = document.getElementById("btnDisconnect");
+    const btnStart = document.getElementById("btnStart");
+    const btnStopPipeline = document.getElementById("btnStopPipeline");
+    const btnPing = document.getElementById("btnPing");
+    const recState = document.getElementById("recState");
+    const player = document.getElementById("player");
+    const outUser = document.getElementById("outUser");
+    const outLlm = document.getElementById("outLlm");
+
+    function log(...args) {
+      const line = args.map(String).join(" ");
+      console.log(line);
+      logEl.textContent += line + "\n";
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    function runMode() {
+      const x = document.querySelector('input[name="runMode"]:checked');
+      return x ? x.value : "triple";
+    }
+
+    function normalizeHttpBase(raw) {
+      const s = raw.trim().replace(/\/+$/, "");
+      return s.startsWith("http://") || s.startsWith("https://") ? s : "";
+    }
+
+    function httpToWsPath(baseHttp, wsPathQuery) {
+      const u = new URL(baseHttp);
+      const wsProto = u.protocol === "https:" ? "wss:" : "ws:";
+      return wsProto + "//" + u.host + wsPathQuery;
+    }
+
+    function maskedKey(k) {
+      if (!k) return "";
+      if (k.length <= 8) return "***";
+      return k.slice(0, 4) + "***" + k.slice(-2);
+    }
+
+    /** @returns {HeadersInit} */
+    function headersWithKey() {
+      const k = httpApiKeyEl.value.trim();
+      return k ? { "X-API-Key": k } : {};
+    }
+
+    /** @returns {HeadersInit} */
+    function headersJsonWithKey() {
+      const x = headersWithKey();
+      return Object.assign({}, x, { "Content-Type": "application/json", Accept: "text/event-stream" });
+    }
+
+    /** @returns {HeadersInit} */
+    function wsApiKeyQS() {
+      const k = httpApiKeyEl.value.trim();
+      return k ? "api_key=" + encodeURIComponent(k) : "";
+    }
+
+    document.querySelectorAll('input[name="runMode"]').forEach((el) =>
+      el.addEventListener("change", () => {
+        const m = runMode();
+        tripleFields.style.display = m === "triple" || m === "chain" ? "block" : "none";
+        dialogFields.style.display = m === "dialog" ? "block" : "none";
+        btnPing.disabled = true;
+        disconnectAsrDuplexSafe();
+        btnConnect.disabled = m !== "dialog";
+        if (m === "dialog") {
+          ws = null;
+          btnConnect.disabled = false;
+          btnStart.disabled = true;
+          btnStopPipeline.disabled = true;
+          recState.textContent = "请先点「连接」。";
+        } else if (m === "triple") {
+          resetTripleUi();
+          recState.textContent =
+            "填好 HTTP Base；开始录音后讲完再停：整段 multipart STT → SSE Chat → WS TTS。";
+        } else {
+          resetTripleUi();
+          recState.textContent =
+            "模式 C：开录即连流式 ASR（上边 STT 会刷 partial）；停录后发 final，再自动 SSE + TTS。";
+        }
+      }),
+    );
+
+    let ws = null;
+    /** @type {WebSocket|null} */
+    let asrWs = null;
+    let chainPCMIntervalId = null;
+    let recordModeFreeze = "";
+    /** @type {((t: string) => void) | null} */
+    let chainFinalResolve = null;
+    /** @type {((e?: Error) => void) | null} */
+    let chainFinalReject = null;
+    /** @type {((ev: MessageEvent) => void) | null} */
+    let boundChainMsg = null;
+
+    /** @type {Float32Array[]} */
+    const pcmStaging = [];
+
+    /** @type {AudioContext|null} */
+    let capCtx = null;
+    /** @type {MediaStream|null} */
+    let mediaStream = null;
+    /** @type {GainNode|null} */
+    let zeroGain = null;
+    /** @type {AudioWorkletNode|ScriptProcessorNode|null} */
+    let node = null;
+    let capturing = false;
+    /** Float32 PCM at capCtx.sampleRate, mono fragments */
+    const captureChunks = [];
+    let sessionTriple = "web-" + Date.now();
+    /** @type {Uint8Array[]} */
+    let ttsChunks = [];
+
+    function disconnectAsrDuplexSafe() {
+      if (chainPCMIntervalId) {
+        clearInterval(chainPCMIntervalId);
+        chainPCMIntervalId = null;
+      }
+      pcmStaging.length = 0;
+      chainFinalResolve = null;
+      chainFinalReject = null;
+      if (asrWs && boundChainMsg) asrWs.removeEventListener("message", boundChainMsg);
+      boundChainMsg = null;
+      if (asrWs && (asrWs.readyState === WebSocket.OPEN || asrWs.readyState === WebSocket.CONNECTING)) {
+        try {
+          asrWs.close();
+        } catch (_) {}
+      }
+      asrWs = null;
+    }
+
+    /** @param {Float32Array} floats mono -1..1 @ capture SR → Int16 PCM @ TARGET_SR blob */
+    function floatToPCMS16Mono16kBlob(floatMono, srIn) {
+      const mono = resampleLinear(floatMono, srIn, TARGET_SR);
+      const pcm = new Int16Array(mono.length);
+      for (let i = 0; i < mono.length; i++) {
+        const s = Math.max(-1, Math.min(1, mono[i]));
+        pcm[i] = s < 0 ? Math.round(s * 0x8000) : Math.round(s * 0x7fff);
+      }
+      return pcm.buffer.slice(pcm.byteOffset, pcm.byteOffset + pcm.byteLength);
+    }
+
+    function flushPcmStagingToAsr(closeAfter) {
+      if (!asrWs || asrWs.readyState !== WebSocket.OPEN) return;
+      if (pcmStaging.length === 0) return;
+      const merged = concatFloat(pcmStaging);
+      pcmStaging.length = 0;
+      if (!capCtx) return;
+      const ab = floatToPCMS16Mono16kBlob(merged, capCtx.sampleRate);
+      asrWs.send(ab);
+    }
+
+    /** @returns {Promise<string>} upstream final transcript */
+    function armChainFinalPromise() {
+      return new Promise((resolve, reject) => {
+        chainFinalResolve = (t) => resolve(t || "");
+        chainFinalReject = (e) => reject(e instanceof Error ? e : new Error(String(e)));
+      });
+    }
+
+    async function sleepMs(ms) {
+      await new Promise((r) => setTimeout(r, ms));
+    }
+
+    async function awaitChainStartedOrThrow() {
+      const deadline = Date.now() + 20000;
+      while (Date.now() < deadline) {
+        if (__chainStartedLatch) return;
+        await sleepMs(35);
+      }
+      throw new Error("ASR 未在超时内started");
+    }
+
+    /** @type {boolean} */
+    let __chainStartedLatch = false;
+
+    async function startChainDuplexRecognition() {
+      disconnectAsrDuplexSafe();
+      __chainStartedLatch = false;
+      chainFinalResolve = null;
+      chainFinalReject = null;
+      let finalizedLines = "";
+      let interimPhrase = "";
+
+      const base = normalizeHttpBase(httpBaseEl.value);
+      if (!base) throw new Error("无效的 HTTP Base");
+      const aq = wsApiKeyQS();
+      const path = `/v1/voice/asr/stream${aq ? "?" + aq : ""}`;
+      const wsurl = httpToWsPath(base, path);
+      log("[chain:WS] GET /v1/voice/asr/stream", wsurl.replace(/([?&]api_key=)[^&]*/gi, "$1***"));
+      asrWs = await openWebSocketPromise(wsurl);
+      asrWs.binaryType = "arraybuffer";
+
+      boundChainMsg = (ev) => {
+        if (ev.data instanceof ArrayBuffer) return;
+        try {
+          const j = JSON.parse(ev.data);
+          log("[chain:ASR]", JSON.stringify(j).slice(0, 280));
+          if (j.op === "welcome") return;
+          if (j.op === "error") {
+            outUser.textContent = "(error) " + (j.message || "");
+            const rj = chainFinalReject;
+            chainFinalReject = null;
+            chainFinalResolve = null;
+            if (rj) rj(new Error(j.message || "asr"));
+            return;
+          }
+          if (j.op === "started") {
+            __chainStartedLatch = true;
+            return;
+          }
+          if (j.op === "partial") {
+            const t = (j.text || "").trim();
+            if (!t) return;
+            if (j.sentence_end) {
+              finalizedLines += (finalizedLines && !/\n$/.test(finalizedLines) ? "\n" : "") + t + "\n";
+              interimPhrase = "";
+            } else interimPhrase = t;
+            outUser.textContent = (finalizedLines + interimPhrase).replace(/\s+$/, "");
+          }
+          if (j.op === "final") {
+            const txt = String(j.text || "").trim();
+            if (txt) outUser.textContent = txt;
+            const r = chainFinalResolve;
+            chainFinalResolve = null;
+            chainFinalReject = null;
+            if (r) r(txt);
+          }
+        } catch (_) {}
+      };
+
+      // openWebSocketPromise 已在 onopen 后 resolve；不可再 await 一次「open」，否则该 Promise 永不触发（流式 ASR 永远发不出 start）。
+      asrWs.addEventListener("message", boundChainMsg);
+      outUser.textContent = "…listening…";
+      asrWs.send(JSON.stringify({ op: "start", format: "pcm", sample_rate: TARGET_SR }));
+      await awaitChainStartedOrThrow();
+      chainPCMIntervalId = setInterval(() => flushPcmStagingToAsr(false), 130);
+    }
+
+    async function finishChainRecognitionAndSSE() {
+      if (chainPCMIntervalId) {
+        clearInterval(chainPCMIntervalId);
+        chainPCMIntervalId = null;
+      }
+      flushPcmStagingToAsr(false);
+      if (!asrWs || asrWs.readyState !== WebSocket.OPEN) throw new Error("ASR WS 不可用");
+      const waited = armChainFinalPromise();
+      asrWs.send(JSON.stringify({ op: "finish" }));
+      const text = await Promise.race([
+        waited,
+        new Promise((_, rej) => setTimeout(() => rej(new Error("ASR final 超时")), 90000)),
+      ]);
+      if (asrWs && boundChainMsg) asrWs.removeEventListener("message", boundChainMsg);
+      boundChainMsg = null;
+      try {
+        asrWs.close();
+      } catch (_) {}
+      asrWs = null;
+      chainFinalResolve = null;
+      chainFinalReject = null;
+      if (!String(text || "").trim()) throw new Error("识别结果为空");
+      log("[chain] FINAL → LLM SSE · runes=", [...String(text)].length);
+      sessionTriple = "web-" + Date.now();
+      await runSSEAndTTSPipeline(text.trim());
+      return text;
+    }
+
+    function resetTripleUi() {
+      disconnectAsrDuplexSafe();
+      ws = null;
+      btnDisconnect.disabled = true;
+      btnConnect.disabled = true;
+      btnStart.disabled = false;
+      btnStopPipeline.disabled = true;
+      btnPing.disabled = true;
+      sessionTriple = "web-" + Date.now();
+    }
+
+    btnConnect.onclick = async () => {
+      const raw = wsUrlEl.value.trim();
+      if (!raw.startsWith("ws://") && !raw.startsWith("wss://")) {
+        alert("请以 ws:// 或 wss:// 开头");
+        return;
+      }
+      log("[ui:B] dialing", raw.replace(/([?&]api_key=)[^&]*/gi, "$1***"));
+      ws = new WebSocket(raw);
+      ws.binaryType = "arraybuffer";
+
+      ws.onopen = () => {
+        log("[ws] open");
+        const sid = "web-" + Date.now();
+        ws.send(JSON.stringify({
+          op: "config",
+          session_id: sid,
+          system: systemPromptEl.value.trim() || "请用简短自然的口语中文回答用户。",
+          voice: paramFromWsUrl(raw, "voice") || tripleVoiceEl.value.trim() || "Cherry",
+        }));
+        btnConnect.disabled = true;
+        btnDisconnect.disabled = false;
+        btnStart.disabled = false;
+        btnStopPipeline.disabled = true;
+        btnPing.disabled = false;
+        recState.textContent = "已连接 · 点开始录音.";
+      };
+
+      ws.onclose = () => {
+        log("[ws] closed");
+        btnConnect.disabled = false;
+        btnDisconnect.disabled = true;
+        btnStart.disabled = true;
+        btnStopPipeline.disabled = true;
+        btnPing.disabled = true;
+        capturing = false;
+        ws = null;
+        stopMicInternal();
+      };
+      ws.onerror = () => log("[ws] error event");
+
+      ws.onmessage = (ev) => {
+        if (ev.data instanceof ArrayBuffer) {
+          log("[ws] binary +", ev.data.byteLength);
+          ttsChunks.push(new Uint8Array(ev.data));
+          return;
+        }
+        try {
+          const j = JSON.parse(ev.data);
+          log("[ws]", JSON.stringify(j).slice(0, 420));
+          if (j.op === "error") log("[srv] ERROR", j.message);
+          if (j.op === "assistant") flushTtsPlayback();
+        } catch {
+          log("[ws]", String(ev.data).slice(0, 280));
+        }
+      };
+    };
+
+    btnDisconnect.onclick = () => {
+      if (ws) ws.close();
+      disconnectAsrDuplexSafe();
+      stopMicInternal();
+    };
+
+    btnPing.onclick = () => {
+      if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ op: "ping" }));
+    };
+
+    btnStart.onclick = async () => {
+      const rm = runMode();
+      recordModeFreeze = rm;
+      if (rm === "triple" || rm === "chain") {
+        const b = normalizeHttpBase(httpBaseEl.value);
+        if (!b) {
+          alert("请填写合法的 http:// 或 https:// 基地址（模式 " + rm + ")");
+          return;
+        }
+      } else if (!ws || ws.readyState !== WebSocket.OPEN) return;
+
+      captureChunks.length = 0;
+      pcmStaging.length = 0;
+      mediaStream = await navigator.mediaDevices.getUserMedia({
+        audio: { channelCount: 1, noiseSuppression: true, echoCancellation: true },
+        video: false,
+      });
+
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      capCtx = new Ctx();
+      zeroGain = capCtx.createGain();
+      zeroGain.gain.value = 0;
+
+      if (capCtx.audioWorklet) {
+        const workletCode = `
+          class PCM extends AudioWorkletProcessor {
+            process(inputs) {
+              const ch = inputs[0]?.[0];
+              if (!ch?.length) return true;
+              this.port.postMessage(new Float32Array(ch));
+              return true;
+            }
+          }
+          registerProcessor("pcm-capture", PCM);
+        `;
+        const blob = new Blob([workletCode], { type: "application/javascript" });
+        const blobUrl = URL.createObjectURL(blob);
+        await capCtx.audioWorklet.addModule(blobUrl);
+        URL.revokeObjectURL(blobUrl);
+        node = new AudioWorkletNode(capCtx, "pcm-capture");
+        node.port.onmessage = (e) => {
+          if (!capturing) return;
+          const buf = e.data;
+          const f = buf instanceof Float32Array ? new Float32Array(buf) : new Float32Array(buf);
+          captureChunks.push(f);
+          if (recordModeFreeze === "chain") pcmStaging.push(f);
+        };
+        const src = capCtx.createMediaStreamSource(mediaStream);
+        src.connect(node);
+        node.connect(zeroGain).connect(capCtx.destination);
+      } else {
+        const processor = capCtx.createScriptProcessor(4096, 1, 1);
+        processor.onaudioprocess = (e) => {
+          if (!capturing) return;
+          const ch = e.inputBuffer.getChannelData(0);
+          const f = new Float32Array(ch);
+          captureChunks.push(f);
+          if (recordModeFreeze === "chain") pcmStaging.push(f);
+        };
+        node = processor;
+        const src = capCtx.createMediaStreamSource(mediaStream);
+        src.connect(processor);
+        processor.connect(zeroGain).connect(capCtx.destination);
+      }
+
+      await capCtx.resume();
+      capturing = true;
+      btnStart.disabled = true;
+      btnStopPipeline.disabled = false;
+      outLlm.textContent = "";
+      ttsChunks.length = 0;
+      if (recordModeFreeze === "chain") {
+        try {
+          outUser.textContent = "… connecting ASR …";
+          await startChainDuplexRecognition();
+          recState.textContent = "流式识别已就绪 · 请说话 · 讲完点「停止」";
+        } catch (e) {
+          log("[chain] start failed", e.message || String(e));
+          alert(String(e.message || e));
+          disconnectAsrDuplexSafe();
+          stopMicInternal();
+          btnStart.disabled = false;
+          btnStopPipeline.disabled = true;
+          capturing = false;
+          return;
+        }
+      } else {
+        outUser.textContent = "";
+      }
+      log("[mic] sampleRate=", capCtx.sampleRate);
+      if (recordModeFreeze !== "chain") recState.textContent = "录音中…";
+    };
+
+    btnStopPipeline.onclick = async () => {
+      capturing = false;
+      btnStopPipeline.disabled = true;
+      const mf = recordModeFreeze;
+
+      try {
+        if (mf === "chain") {
+          await sleepMs(70);
+          if (chainPCMIntervalId) {
+            clearInterval(chainPCMIntervalId);
+            chainPCMIntervalId = null;
+          }
+          flushPcmStagingToAsr(false);
+          stopMicInternal();
+          await finishChainRecognitionAndSSE();
+        } else {
+          const capturedSampleRate = capCtx ? capCtx.sampleRate : TARGET_SR;
+          stopMicInternal();
+
+          if (captureChunks.length === 0) {
+            log("[ui] 无音频");
+            btnStart.disabled = mf === "dialog" ? !(ws && ws.readyState === WebSocket.OPEN) : !normalizeHttpBase(httpBaseEl.value);
+            recState.textContent = "本轮无采集数据 · 请再录";
+            return;
+          }
+
+          const merged = concatFloat(captureChunks);
+          const mono16k = resampleLinear(merged, capturedSampleRate, TARGET_SR);
+          const wavBuf = pcmFloatToMonoWav(mono16k, TARGET_SR);
+          const wavBlob = new Blob([wavBuf], { type: "audio/wav" });
+          log("[ui] WAV", wavBlob.size, "bytes");
+
+          if (mf === "triple") await runTriplePipeline(wavBlob);
+          else await runDialogWebSocketRound(wavBuf);
+        }
+      } catch (e) {
+        log("[err]", e.message || String(e));
+        alert(String(e.message || e));
+      }
+
+      disconnectAsrDuplexSafe();
+      recState.textContent = "本轮结束；模式 C/A 可调 HTTP Base 再录，模式 B 先保持 WS";
+      btnStart.disabled =
+        mf === "dialog" ? !(ws && ws.readyState === WebSocket.OPEN) : !normalizeHttpBase(httpBaseEl.value);
+      if (mf === "dialog") btnStopPipeline.disabled = !(ws && ws.readyState === WebSocket.OPEN);
+    };
+
+    async function runSSEAndTTSPipeline(userText) {
+      const base = normalizeHttpBase(httpBaseEl.value);
+      if (!base) throw new Error("无效的 HTTP Base");
+      const voice = tripleVoiceEl.value.trim() || "Cherry";
+      const sid = sessionTriple;
+      const pathQuery = `/v1/voice/tts/stream?voice=${encodeURIComponent(voice)}&format=pcm&sample_rate=${TTS_SR}`;
+      const aq = wsApiKeyQS();
+      const wsUrlFinal = httpToWsPath(base, pathQuery + (aq ? "&" + aq : ""));
+      log("[api:3] WS TTS", wsUrlFinal.replace(/([?&]api_key=)[^&]*/gi, "$1***"));
+
+      outLlm.textContent = "…";
+      const wsTTS = await openWebSocketPromise(wsUrlFinal);
+      wsTTS.binaryType = "arraybuffer";
+      ttsChunks.length = 0;
+      wsTTS.addEventListener("message", dialogTTSOnMessageHandler);
+
+      let pendingSynth = "";
+
+      /** @param {string} seg */
+      function sendAppend(seg) {
+        if (!seg.trim()) return;
+        log("[api:3] append runes=", [...seg].length);
+        wsTTS.send(JSON.stringify({ op: "append", text: seg }));
+      }
+
+      /** @param {string} fragment */
+      function feedSynth(fragment) {
+        pendingSynth += fragment;
+        const peels = peelTTSChunks(pendingSynth);
+        peels.outs.forEach(sendAppend);
+        pendingSynth = peels.remaining;
+      }
+
+      const sseBody = {
+        kind: "text",
+        stream: true,
+        session_id: sid,
+        text: userText,
+        system: systemPromptEl.value.trim() || "请用简短自然的口语中文回答用户。",
+      };
+      log("[api:2 POST /v1/messages SSE] Chat");
+      const r2 = await fetch(base + "/v1/messages", {
+        method: "POST",
+        headers: headersJsonWithKey(),
+        body: JSON.stringify(sseBody),
+      });
+
+      let assistantAccum = "";
+
+      async function sseLoop() {
+        if (!r2.ok) throw new Error("SSE HTTP " + r2.status + " " + (await r2.text()).slice(0, 480));
+        const reader = r2.body.getReader();
+        const dec = new TextDecoder();
+        let carry = "";
+
+        /** @type {{event:string,data:string}|null} */
+        function shiftBlock(block) {
+          let evName = "";
+          let dataMerged = "";
+          for (const rawLine of block.split("\n")) {
+            const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
+            if (line.startsWith("event:")) evName = line.slice(6).trim();
+            else if (line.startsWith("data:")) dataMerged += line.slice(5).trim();
+          }
+          return { event: evName, data: dataMerged };
+        }
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          carry += dec.decode(value, { stream: true });
+          while (carry.includes("\n\n")) {
+            const i = carry.indexOf("\n\n");
+            const block = carry.slice(0, i);
+            carry = carry.slice(i + 2);
+            const { event, data } = shiftBlock(block);
+            if (!event && !data) continue;
+            if (event === "delta") {
+              let tail = "";
+              try {
+                const o = JSON.parse(data);
+                tail = o.text || "";
+              } catch {
+                tail = data;
+              }
+              assistantAccum += tail;
+              outLlm.textContent = assistantAccum;
+              feedSynth(tail);
+            } else if (event === "error") throw new Error("SSE error: " + data);
+            else if (event === "done") {
+              reader.cancel().catch(() => {});
+              return;
+            }
+          }
+        }
+      }
+
+      await sseLoop();
+
+      const finalPeel = peelTTSChunks(pendingSynth + "", true);
+      finalPeel.outs.forEach(sendAppend);
+      log("[api:3] finish()");
+      wsTTS.send(JSON.stringify({ op: "finish" }));
+
+      await waitWsCloseOrQuiet(wsTTS, 120000).finally(() =>
+        wsTTS.removeEventListener("message", dialogTTSOnMessageHandler),
+      );
+      try {
+        wsTTS.close();
+      } catch (_) {}
+    }
+
+    async function runTriplePipeline(wavBlob) {
+      sessionTriple = "web-" + Date.now();
+      outUser.textContent = "…识别中…";
+      outLlm.textContent = "…";
+
+      const base = normalizeHttpBase(httpBaseEl.value);
+      if (!base) throw new Error("无效的 HTTP Base");
+
+      const fd = new FormData();
+      fd.append("kind", "speech_to_text");
+      fd.append("session_id", sessionTriple);
+      fd.append("audio", wavBlob, "user.wav");
+
+      log("[triple:1 POST /v1/messages] multipart speech_to_text");
+      const r1 = await fetch(base + "/v1/messages", { method: "POST", body: fd, headers: headersWithKey() });
+      const j1 = await r1.json();
+      if (!r1.ok) throw new Error("STT HTTP " + r1.status + " " + (j1.error && j1.error.message ? j1.error.message : ""));
+      const st = j1.status;
+      if (st && st.success === false) throw new Error("STT: " + (st.error || "failed"));
+      const text = (((j1.result || {}).text) || "").trim();
+      outUser.textContent = text || "(empty)";
+      log("[triple:1] STT chars=", [...text].length, text.slice(0, 200));
+
+      if (!text) throw new Error("语音识别为空");
+      await runSSEAndTTSPipeline(text.trim());
+    }
+
+    function dialogTTSOnMessageHandler(ev) {
+      if (!(ev instanceof MessageEvent)) return;
+      if (ev.data instanceof ArrayBuffer) {
+        ttsChunks.push(new Uint8Array(ev.data));
+        return;
+      }
+      try {
+        const j = JSON.parse(ev.data);
+        log("[triple:tts-ws]", JSON.stringify(j).slice(0, 240));
+        if (j.op === "done") flushTtsPlayback();
+      } catch {
+        /* noop */
+      }
+    }
+
+    function openWebSocketPromise(url) {
+      return new Promise((resolve, reject) => {
+        const s = new WebSocket(url);
+        s.binaryType = "arraybuffer";
+        s.onopen = () => resolve(s);
+        s.onerror = () => reject(new Error("ws error"));
+      });
+    }
+
+    function waitWsCloseOrQuiet(sock, ms) {
+      return new Promise((resolve) => {
+        const tid = setTimeout(() => resolve(), ms);
+        sock.addEventListener("close", () => {
+          clearTimeout(tid);
+          resolve();
+        });
+      });
+    }
+
+    async function runDialogWebSocketRound(wavBuf) {
+      if (!ws || ws.readyState !== WebSocket.OPEN) throw new Error("WebSocket 未连接");
+      ttsChunks.length = 0;
+      let off = 0;
+      while (off < wavBuf.byteLength) {
+        const end = Math.min(off + 65536, wavBuf.byteLength);
+        ws.send(wavBuf.slice(off, end));
+        off = end;
+      }
+      ws.send(JSON.stringify({ op: "end_turn" }));
+      log("[ui:B] sent end_turn");
+    }
+
+    function stopMicInternal() {
+      try {
+        if (node && capCtx && "disconnect" in node) node.disconnect();
+      } catch {}
+      node = null;
+      try {
+        if (zeroGain) zeroGain.disconnect();
+      } catch {}
+      zeroGain = null;
+      if (mediaStream) mediaStream.getTracks().forEach((t) => t.stop());
+      mediaStream = null;
+      if (capCtx && capCtx.state !== "closed") capCtx.close();
+      capCtx = null;
+    }
+
+    function flushTtsPlayback() {
+      if (ttsChunks.length === 0) {
+        player.removeAttribute("src");
+        log("[tts] assistant 已到但暂无 PCM chunk");
+        return;
+      }
+      let total = 0;
+      for (const u of ttsChunks) total += u.length;
+      const merged = new Uint8Array(total);
+      let pos = 0;
+      for (const u of ttsChunks) {
+        merged.set(u, pos);
+        pos += u.length;
+      }
+      const wavBlob = pcmS16leToWavBlob(merged.buffer, merged.byteLength, TTS_SR, 1);
+      const blobUrl = URL.createObjectURL(wavBlob);
+      player.src = blobUrl;
+      player.play().catch((e) => log("[tts] play suppressed:", e.message));
+      log("[tts] PCM bytes=", merged.byteLength);
+      ttsChunks.length = 0;
+    }
+
+    function paramFromWsUrl(urlStr, key) {
+      try {
+        const u = new URL(urlStr.replace(/^ws/, "http"));
+        return u.searchParams.get(key);
+      } catch {
+        return null;
+      }
+    }
+
+    /* ---- phrase peel for incremental TTS (aligned with voice_dialog peelTTSChunks) ---- */
+    function findTTSCutLen(r, minStrong, minWeak, maxHard, strongStr, weakStr) {
+      if (r.length === 0) return -1;
+      const hasStrong = (cp) => [...strongStr].includes(cp);
+      const hasWeak = (cp) => [...weakStr].includes(cp);
+      let first = -1;
+      for (let i = minStrong - 1; i < r.length; i++) {
+        if (hasStrong(r[i])) {
+          first = i + 1;
+          break;
+        }
+      }
+      if (first < 0 && r.length >= minWeak) {
+        for (let i = minWeak - 1; i < r.length; i++) {
+          if (hasWeak(r[i])) {
+            first = i + 1;
+            break;
+          }
+        }
+      }
+      if (first < 0 && r.length >= maxHard) first = maxHard;
+      if (first <= 0) return -1;
+      return first;
+    }
+
+    /** @returns {{outs: string[], remaining: string}} */
+    function peelTTSChunks(pendingStr, eof) {
+      const minBeforeStrong = 3;
+      const minBeforeWeak = 12;
+      const maxRunesHard = 56;
+      const strong = "。！？!?;；\n";
+      const weak = "，,";
+      const outs = [];
+      let pending = pendingStr;
+      while (true) {
+        if (!pending.trim()) break;
+        const r = [...pending];
+        if (!eof && r.length === 0) break;
+        const cut = findTTSCutLen(r, minBeforeStrong, minBeforeWeak, maxRunesHard, strong, weak);
+        if (cut < 0) break;
+        const seg = r.slice(0, cut).join("").trim();
+        pending = r.slice(cut).join("");
+        if (seg) outs.push(seg);
+        else break;
+      }
+      if (eof && pending.trim()) {
+        outs.push(pending.trim());
+        pending = "";
+      }
+      return { outs, remaining: pending };
+    }
+
+    /** @param {Float32Array[]} chunks */
+    function concatFloat(chunks) {
+      let n = 0;
+      for (const c of chunks) n += c.length;
+      const out = new Float32Array(n);
+      let p = 0;
+      for (const c of chunks) {
+        out.set(c, p);
+        p += c.length;
+      }
+      return out;
+    }
+
+    function resampleLinear(samples, srIn, srOut) {
+      if (srIn === srOut) return samples;
+      const ratio = srIn / srOut;
+      const outLen = Math.max(1, Math.floor(samples.length / ratio));
+      const out = new Float32Array(outLen);
+      for (let i = 0; i < outLen; i++) {
+        const x = i * ratio;
+        const x0 = Math.floor(x);
+        const x1 = Math.min(x0 + 1, samples.length - 1);
+        const f = x - x0;
+        out[i] = samples[x0] * (1 - f) + samples[x1] * f;
+      }
+      return out;
+    }
+
+    function pcmFloatToMonoWav(mono, sampleRate) {
+      const pcm = new Int16Array(mono.length);
+      for (let i = 0; i < mono.length; i++) {
+        const s = Math.max(-1, Math.min(1, mono[i]));
+        pcm[i] = s < 0 ? Math.round(s * 0x8000) : Math.round(s * 0x7fff);
+      }
+      return buildWavFromPCM16(new Uint8Array(pcm.buffer), sampleRate, 1);
+    }
+
+    function buildWavFromPCM16(pcm16, sampleRate, numChannels) {
+      const hdr = new ArrayBuffer(44);
+      const v = new DataView(hdr);
+      const dataSize = pcm16.byteLength;
+      writeAscii(v, 0, "RIFF");
+      v.setUint32(4, 36 + dataSize, true);
+      writeAscii(v, 8, "WAVE");
+      writeAscii(v, 12, "fmt ");
+      v.setUint32(16, 16, true);
+      v.setUint16(20, 1, true);
+      v.setUint16(22, numChannels, true);
+      v.setUint32(24, sampleRate, true);
+      const bpp = numChannels * 2;
+      v.setUint32(28, sampleRate * bpp, true);
+      v.setUint16(32, bpp, true);
+      v.setUint16(34, 16, true);
+      writeAscii(v, 36, "data");
+      v.setUint32(40, dataSize, true);
+      const wav = new Uint8Array(44 + dataSize);
+      wav.set(new Uint8Array(hdr), 0);
+      wav.set(pcm16, 44);
+      return wav.buffer.slice(0, wav.byteLength);
+    }
+
+    function writeAscii(view, offset, str) {
+      for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
+    }
+
+    function pcmS16leToWavBlob(arrayBuffer, pcmByteLength, sampleRate, numChannels) {
+      const pcmView = new Uint8Array(arrayBuffer, 0, pcmByteLength);
+      const wav = buildWavFromPCM16(pcmView, sampleRate, numChannels);
+      return new Blob([wav], { type: "audio/wav" });
+    }
+
+    resetTripleUi();
+    recState.textContent = "默认模式 C：HTTP Base → 开始录音（流式 ASR）→ 停止后自动 LLM+TTS。或切换 A/B。";
+
+    btnStart.disabled = false;
+    btnStopPipeline.disabled = true;
+  </script>
+</body>
+</html>

@@ -77,6 +77,10 @@ type serverState struct {
 	artifacts *agentruntime.ArtifactStore
 	tools     *agentruntime.ToolRegistryExecutor
 	sdk       *fullmodel.Client
+	// voiceRealtimeWSModel 来自 brains.voice_realtime_ws.model；非空时优先于 WebSocket ?model=。
+	voiceRealtimeWSModel string
+	// asrBrain 用于 GET /v1/voice/asr/stream 双流识别桥接（与其它入口共用 brains.asr 配置）。
+	asrBrain *brain.Speech2TxtASRBrain
 }
 
 func main() {
@@ -176,7 +180,13 @@ func serve(args []string) error {
 		handleDeleteVoiceCustomization(w, r, state)
 	})
 	mux.HandleFunc("GET /v1/voice/tts/stream", func(w http.ResponseWriter, r *http.Request) {
-		handleVoiceTTSStream(w, r, state.sdk)
+		handleVoiceTTSStream(w, r, state.sdk, state.voiceRealtimeWSModel)
+	})
+	mux.HandleFunc("GET /v1/voice/dialog/stream", func(w http.ResponseWriter, r *http.Request) {
+		handleVoiceDialogStream(w, r, state.sdk, state.voiceRealtimeWSModel)
+	})
+	mux.HandleFunc("GET /v1/voice/asr/stream", func(w http.ResponseWriter, r *http.Request) {
+		handleVoiceASRStream(w, r, state.asrBrain)
 	})
 
 	fmt.Printf("fullmodel api listening on http://%s\n", *addr)
@@ -185,7 +195,23 @@ func serve(args []string) error {
 	if strings.TrimSpace(*apiKey) != "" {
 		fmt.Fprintln(os.Stderr, "fullmodel: HTTP API key auth is on (from -api-key or FULLMODEL_API_KEY). WebSocket clients must send the same key (X-API-Key, Bearer, or ?api_key=).")
 	}
-	return http.ListenAndServe(*addr, authMiddleware(mux, *apiKey))
+	return http.ListenAndServe(*addr, withCORSMiddleware(authMiddleware(mux, *apiKey)))
+}
+
+// withCORSMiddleware 允许浏览器从另一个本地端口静态页调试（如 python -m http.server → fetch/ws）。
+// 生产环境应由网关收口 CORS。
+func withCORSMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("Access-Control-Allow-Origin", "*")
+		h.Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+		h.Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-API-Key, X-Client-Trace-Id, X-Request-Id")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func runOnce(args []string) error {
@@ -257,13 +283,28 @@ func newServerState(configFile string, taskWorkers int) (*serverState, error) {
 	if err != nil {
 		return nil, err
 	}
+	wsCfg, wsErr := cfgs.Config(fileop.BrainConfigVoiceRealtimeWS)
+	if wsErr != nil {
+		return nil, wsErr
+	}
+	wsModel := ""
+	if wsCfg != nil {
+		wsModel = strings.TrimSpace(wsCfg.Model)
+	}
+	asrCfg, err := cfgs.Config(fileop.BrainConfigASR)
+	if err != nil {
+		return nil, err
+	}
+	asrBrain := brain.NewSpeech2TxtASRBrain(agentruntime.ToBrainConfig(asrCfg))
 	return &serverState{
-		runner:    agentruntime.NewRunner(registry, toolExecutor),
-		sessions:  sessionStore,
-		tasks:     agentruntime.NewTaskStore(taskWorkers),
-		artifacts: artifactStore,
-		tools:     toolExecutor,
-		sdk:       sdk,
+		runner:               agentruntime.NewRunner(registry, toolExecutor),
+		sessions:             sessionStore,
+		tasks:                agentruntime.NewTaskStore(taskWorkers),
+		artifacts:            artifactStore,
+		tools:                toolExecutor,
+		sdk:                  sdk,
+		voiceRealtimeWSModel: wsModel,
+		asrBrain:             asrBrain,
 	}, nil
 }
 
@@ -681,12 +722,16 @@ func firstNonEmpty(values ...string) string {
 func printUsage() {
 	fmt.Print(`usage:
   fullmodel serve [-addr 127.0.0.1:8080] [-config config/llm.yaml]
-    Voice: GET/POST /v1/voice/customizations, DELETE /v1/voice/customizations/{voice}
+    Voice: GET/POST /v1/voice/customizations (POST omit target_model → brains.voice_realtime_ws.model), DELETE /v1/voice/customizations/{voice}
     Voice tags (Omni): POST /v1/voice/analyze-tags (multipart field audio; needs llm.yaml brains.omni)
-    WebSocket realtime TTS: GET ws://<addr>/v1/voice/tts/stream (optional query: voice, model, mode, format, sample_rate, ...)
+    WebSocket realtime TTS: GET ws://<addr>/v1/voice/tts/stream (merged brains.voice_realtime_ws.model, else ?model=…)
+    WebSocket voice dialog (mic→ASR→chat→TTS stream): GET ws://<addr>/v1/voice/dialog/stream (same voice/model query knobs)
+    WebSocket streaming ASR (duplex partial/final): GET ws://<addr>/v1/voice/asr/stream (JSON start/finish + binary PCM s16le @16k or wav; see examples/voice_dialog_web)
     Examples: go run ./examples/voice_clone_http_client -audio sample.mp3
               go run ./examples/voice_analyze_http_client -synthetic
               go run ./examples/voice_tts_ws_client -url ws://<addr>/v1/voice/tts/stream -text "你好"
+              go run ./examples/voice_dialog_mac -seconds 5   # macOS+ffmpeg; default -av-audio none:0; -list-devices-only
+              examples/voice_dialog_web: python3 -m http.server 8765 — open http://127.0.0.1:8765/ for browser mic WS demo
   fullmodel run [-kind text] [-prompt "..."] [-stream]
 `)
 }

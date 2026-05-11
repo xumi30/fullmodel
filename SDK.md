@@ -8,7 +8,7 @@
 go get github.com/xumi30/fullmodel
 ```
 
-准备配置文件 `config/llm.yaml`：
+准备配置文件 `config/llm.yaml`（示例见仓库根目录 [`config/llm.yaml.example`](./config/llm.yaml.example)）。与本仓库 **`fullmodel serve`**、`LoadBrainConfigs` 一致：
 
 ```yaml
 defaults:
@@ -16,20 +16,25 @@ defaults:
 
 profiles:
   qwen:
+    api_key: ${DASHSCOPE_API_KEY}
     provider: qwen
-    api_key_env: DASHSCOPE_API_KEY
+    region: cn-beijing
 
 brains:
   text:
     model: qwen-plus
-  image:
+  vision:
     model: qwen-vl-plus
-  speech_to_text:
-    model: qwen-audio-asr
-  text_to_speech:
-    model: qwen-tts
-  image_generate:
+  voice:
+    model: cosyvoice-v3-flash
+  asr:
+    model: fun-asr-realtime
+  voice_realtime_ws:
+    model: qwen3-tts-vc-realtime-2026-01-15
+  image:
     model: qwen-image-2.0-pro
+  omni:
+    model: qwen3.5-omni-plus
 ```
 
 ```bash
@@ -535,6 +540,8 @@ _ = session.AppendText("第一段文本。")
 _ = session.AppendText("第二段文本。")
 _ = session.Finish()
 ```
+
+**`fullmodel serve`（浏览器 / 网关）**：与上面同一套 **Qwen Realtime**：连接 **`GET /v1/voice/tts/stream`**，查询参数 **`voice`** 既可填内置名（如 `Cherry`），也可填 **`CloneVoice` 返回的 `voice` id**（须与 **`TargetModel` / `brains.voice_realtime_ws.model`** 一致）。文本侧用 **`op":"append"`**、**`finish`** 等与 README「WebSocket：实时语音合成」一致。边录边识别可再接 **`GET /v1/voice/asr/stream`**（`partial` / `final`），详见 README **[WebSocket：流式语音识别](README.md#websocket-voice-asr-stream)**；三接口编排参考 `examples/voice_dialog_web/`。
 
 实时语音交互走百炼多模态 WebSocket。业务侧可以直接发送二进制音频，也可以主动要求服务端按 prompt 或 transcript 应答：
 

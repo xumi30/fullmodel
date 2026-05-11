@@ -76,6 +76,12 @@ func handleCreateVoiceCustomization(w http.ResponseWriter, r *http.Request, stat
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	if strings.TrimSpace(cloneReq.TargetModel) == "" {
+		if tm := strings.TrimSpace(state.voiceRealtimeWSModel); tm != "" {
+			cloneReq.TargetModel = tm
+			logging.Info("[voice.clone] target_model_from_serve_config trace=%s value=%q (brains.voice_realtime_ws)", trace, tm)
+		}
+	}
 	logging.Info("[voice.clone] create_parsed trace=%s remote=%s preferred_name=%q target_model=%q language=%q model=%q audio=%s text_len=%d",
 		trace, remote, cloneReq.PreferredName, cloneReq.TargetModel, cloneReq.Language, cloneReq.Model, voiceCloneAudioSummary(cloneReq), len([]rune(cloneReq.Text)))
 	result, err := state.sdk.CloneVoice(r.Context(), cloneReq)

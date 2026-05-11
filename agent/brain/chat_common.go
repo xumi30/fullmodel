@@ -133,14 +133,21 @@ func createChatCompletion(ctx context.Context, httpClient *http.Client, cfg *Con
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		logging.Error("[llm.response] nonstream error status=%d provider=%s model=%s body=%s",
-			resp.StatusCode, cfg.Provider, req.Model, truncateForLog(string(body), 1200))
-		return nil, fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(body))
+		bodyStr := string(body)
+		var bodyObj any
+		detail := truncateForLog(bodyStr, 12000)
+		if json.Unmarshal(body, &bodyObj) == nil {
+			detail = logging.CompactJSONForLog(bodyObj, 12000)
+		}
+		logging.Error("[llm.response] nonstream error status=%d provider=%s model=%s detail=%s",
+			resp.StatusCode, cfg.Provider, req.Model, detail)
+		return nil, fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, bodyStr)
 	}
 
 	var response ChatCompletionResponse
 	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
-		logging.Error("[llm.response] nonstream decode failed provider=%s model=%s err=%v", cfg.Provider, req.Model, err)
+		logging.Error("[llm.response] nonstream decode failed provider=%s model=%s err=%v",
+			cfg.Provider, req.Model, err)
 		return nil, err
 	}
 	contentRunes := 0
@@ -286,8 +293,14 @@ func createChatCompletionStream(ctx context.Context, httpClient *http.Client, cf
 
 		if resp.StatusCode != http.StatusOK {
 			body, _ := io.ReadAll(resp.Body)
-			logging.Error("chat stream response non-200 status=%d body=%s", resp.StatusCode, truncateForLog(string(body), 2000))
-			streamOut.fail(fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(body)))
+			bodyStr := string(body)
+			var bodyObj any
+			detail := truncateForLog(bodyStr, 12000)
+			if json.Unmarshal(body, &bodyObj) == nil {
+				detail = logging.CompactJSONForLog(bodyObj, 12000)
+			}
+			logging.Error("chat stream response non-200 status=%d detail=%s", resp.StatusCode, detail)
+			streamOut.fail(fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, bodyStr))
 			return
 		}
 
@@ -333,7 +346,12 @@ func createChatCompletionStream(ctx context.Context, httpClient *http.Client, cf
 
 				var chunk ChatCompletionChunk
 				if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-					logging.Error("chat stream decode failed line=%d data=%s err=%v", lineCount, truncateForLog(data, 2000), err)
+					var raw any
+					detail := truncateForLog(data, 8000)
+					if json.Unmarshal([]byte(data), &raw) == nil {
+						detail = logging.CompactJSONForLog(raw, 8000)
+					}
+					logging.Error("chat stream decode failed line=%d err=%v detail=%s", lineCount, err, detail)
 					streamOut.fail(fmt.Errorf("failed to decode SSE data chunk: %w", err))
 					return
 				}

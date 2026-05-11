@@ -19,6 +19,10 @@ func NewRegistryFromConfigs(cfgs *fileop.BrainConfigs) (*Registry, error) {
 	if err != nil {
 		return nil, err
 	}
+	asrCfg, err := cfgs.Config(fileop.BrainConfigASR)
+	if err != nil {
+		return nil, err
+	}
 	imageCfg, err := cfgs.Config(fileop.BrainConfigImage)
 	if err != nil {
 		return nil, err
@@ -30,7 +34,7 @@ func NewRegistryFromConfigs(cfgs *fileop.BrainConfigs) (*Registry, error) {
 
 	textBrain := brain.NewTextBrain(ToBrainConfig(textCfg))
 	visionBrain := brain.NewImageBrain(ToBrainConfig(visionCfg))
-	asrBrain := brain.NewSpeech2TxtASRBrain(ToBrainConfig(voiceCfg))
+	asrBrain := brain.NewSpeech2TxtASRBrain(ToBrainConfig(asrCfg))
 	voiceBrain := brain.NewText2VoiceBrain(ToBrainConfig(voiceCfg))
 	imageBrain := brain.NewImageGenerateBrain(ToBrainConfig(imageCfg))
 	imageEditBrain := brain.NewImageEditBrain(ToBrainConfig(imageCfg))

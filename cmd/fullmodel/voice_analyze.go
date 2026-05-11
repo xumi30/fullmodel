@@ -127,7 +127,12 @@ func handleVoiceAnalyzeTags(w http.ResponseWriter, r *http.Request, state *serve
 		return
 	}
 	if !result.Output.Status.Success {
-		logging.Warn("[voice.analyze] brain_status_fail trace=%s err=%q", trace, result.Output.Status.Error)
+		logging.Warn("[voice.analyze] brain_status_fail trace=%s detail=%s", trace,
+			logging.CompactJSONForLog(map[string]any{
+				"success": result.Output.Status.Success,
+				"error":   result.Output.Status.Error,
+				"mode":    result.Output.Mode,
+			}, 6000))
 		writeError(w, http.StatusBadGateway, fmt.Errorf("%s", result.Output.Status.Error))
 		return
 	}

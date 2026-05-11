@@ -26,6 +26,8 @@ brains:
     model: qwen-vl-plus
   voice:
     model: cosyvoice-v3-flash
+  voice_realtime_ws:
+    model: qwen3-tts-flash-realtime
   image:
     model: qwen-image-2.0-pro
 `)
@@ -43,6 +45,38 @@ brains:
 		image, err := cfgs.Config(BrainConfigImage)
 		require.NoError(t, err)
 		require.Equal(t, "qwen-image-2.0-pro", image.Model)
+
+		ws, err := cfgs.Config(BrainConfigVoiceRealtimeWS)
+		require.NoError(t, err)
+		require.Equal(t, "qwen3-tts-flash-realtime", ws.Model)
+
+		asr, err := cfgs.Config(BrainConfigASR)
+		require.NoError(t, err)
+		require.Equal(t, "test_key", asr.APIKey)
+		require.Equal(t, "fun-asr-realtime", asr.Model)
+	})
+
+	t.Run("voice_realtime_ws uses built-in default when omitted from yaml", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		restoreRoot := setRuntimeRootForTest(t, tmpDir)
+		defer restoreRoot()
+
+		writeConfig(t, tmpDir, `
+defaults:
+  api_key: test_key
+  provider: qwen
+  region: cn-beijing
+brains:
+  text:
+    model: qwen-plus
+`)
+
+		cfgs, err := LoadBrainConfigs()
+		require.NoError(t, err)
+
+		ws, err := cfgs.Config(BrainConfigVoiceRealtimeWS)
+		require.NoError(t, err)
+		require.Equal(t, DefaultVoiceRealtimeWSModel, ws.Model)
 	})
 
 	t.Run("expands environment variables", func(t *testing.T) {
@@ -149,6 +183,9 @@ func TestBrainConfigsConfig(t *testing.T) {
 				APIKey: "voice_key",
 				Model:  "cosyvoice-v3-flash",
 			},
+			BrainConfigVoiceRealtimeWS: {
+				Model: "qwen3-tts-flash-realtime",
+			},
 		},
 	}
 
@@ -165,6 +202,16 @@ func TestBrainConfigsConfig(t *testing.T) {
 	require.Equal(t, "voice_key", voice.APIKey)
 	require.Equal(t, "openai", voice.Provider)
 	require.Equal(t, "cosyvoice-v3-flash", voice.Model)
+
+	voiceWs, err := cfgs.Config(BrainConfigVoiceRealtimeWS)
+	require.NoError(t, err)
+	require.Equal(t, "shared_key", voiceWs.APIKey)
+	require.Equal(t, "qwen3-tts-flash-realtime", voiceWs.Model)
+
+	asr, err := cfgs.Config(BrainConfigASR)
+	require.NoError(t, err)
+	require.Equal(t, "shared_key", asr.APIKey)
+	require.Equal(t, "fun-asr-realtime", asr.Model)
 
 	vision, err := cfgs.Config(BrainConfigVision)
 	require.NoError(t, err)
@@ -196,6 +243,8 @@ brains:
     model: qwen-vl-plus
   voice:
     model: cosyvoice-v3-flash
+  voice_realtime_ws:
+    model: qwen3-tts-flash-realtime
   image:
     model: qwen-image-2.0-pro
   omni:
@@ -221,6 +270,15 @@ brains:
 	omni, err := LoadOmniBrainConfig()
 	require.NoError(t, err)
 	require.Equal(t, "qwen3.5-omni-plus", omni.Model)
+
+	voiceWs, err := LoadVoiceRealtimeWSBrainConfig()
+	require.NoError(t, err)
+	require.Equal(t, "qwen3-tts-flash-realtime", voiceWs.Model)
+
+	asr, err := LoadASRBrainConfig()
+	require.NoError(t, err)
+	require.Equal(t, "shared_key", asr.APIKey)
+	require.Equal(t, "fun-asr-realtime", asr.Model)
 }
 
 func TestConfigFilePath(t *testing.T) {

@@ -7,10 +7,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 
 	"github.com/gorilla/websocket"
+	"github.com/xumi30/fullmodel/utils/logging"
 )
 
 // Text2VoiceBrain 实时语音合成（CosyVoice WebSocket）
@@ -186,6 +188,8 @@ func (b *Text2VoiceBrain) ProcessInput(input *BrainInput) (*BrainOutput, error) 
 			}
 			var ev cosyEvent
 			if err := json.Unmarshal(msg, &ev); err != nil {
+				logging.Warn("[brain.tts] skip_invalid_json_event bytes=%d err=%v preview=%s",
+					len(msg), err, logging.TruncateRunes(string(msg), 240))
 				continue
 			}
 			events <- ev
@@ -295,6 +299,7 @@ func (b *Text2VoiceBrain) ProcessInput(input *BrainInput) (*BrainOutput, error) 
 				if ev.Header.ErrorCode != "" {
 					msg = fmt.Sprintf("%s: %s", ev.Header.ErrorCode, msg)
 				}
+				logging.Error("[brain.tts] task_failed detail=%s", logging.CompactJSONForLog(ev, 12000))
 				return brainErrorWithMetadata(msg, meta), fmt.Errorf("%s", msg)
 			}
 		}
@@ -325,6 +330,7 @@ func (b *Text2VoiceBrain) waitEvent(ctx context.Context, events <-chan cosyEvent
 				if ev.Header.ErrorCode != "" {
 					msg = fmt.Sprintf("%s: %s", ev.Header.ErrorCode, msg)
 				}
+				logging.Error("[brain.tts] wait_event task_failed want=%s detail=%s", want, logging.CompactJSONForLog(ev, 12000))
 				return fmt.Errorf("%s", msg)
 			}
 		}
@@ -336,7 +342,13 @@ func (b *Text2VoiceBrain) dial(ctx context.Context) (*websocket.Conn, error) {
 	h.Set("Authorization", fmt.Sprintf("bearer %s", b.config.APIKey))
 	h.Set("User-Agent", "PeopleAgent/1.0")
 	// 如需开启数据合规检测，可在 Extra 里自己加 header 映射；这里保持默认不启用
-	conn, _, err := b.dialer.DialContext(ctx, b.getWSURL(), h)
+	conn, resp, err := b.dialer.DialContext(ctx, b.getWSURL(), h)
+	if err != nil && resp != nil && resp.Body != nil {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 16384))
+		_ = resp.Body.Close()
+		logging.Error("[brain.tts] dial_failed err=%v detail=%s", err,
+			logging.CompactJSONForLog(map[string]any{"http_status": resp.Status, "body": string(body)}, 12000))
+	}
 	return conn, err
 }
 

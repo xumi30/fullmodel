@@ -40,7 +40,7 @@ utils/fileop       配置读取
 
 ### 1. 配置模型
 
-创建 `config/llm.yaml`：
+创建 `config/llm.yaml`，或复制仓库 [`config/llm.yaml.example`](./config/llm.yaml.example)。
 
 ```yaml
 defaults:
@@ -59,6 +59,9 @@ brains:
     model: qwen-vl-plus
   voice:
     model: cosyvoice-v3-flash
+  # fullmodel serve：与 WebSocket 实时 TTS 同源；亦为 POST /v1/voice/customizations 在省略 target_model 时的默认目标模型（与 voice 无关）。
+  voice_realtime_ws:
+    model: qwen3-tts-vc-realtime-2026-01-15
   image:
     model: qwen-image-2.0-pro
   omni:
@@ -425,6 +428,30 @@ go run ./cmd/fullmodel serve \
 | `POST` | `/v1/voice/customizations` | 提交样本音频，创建克隆音色 |
 | `DELETE` | `/v1/voice/customizations/{voice}` | 按音色 id 删除克隆配置 |
 | `GET` | `/v1/voice/tts/stream` | **升级到 WebSocket**：实时语音合成流（见下） |
+| `GET` | `/v1/voice/asr/stream` | **升级到 WebSocket**：双工语音识别（二进制推流；下行 `partial` / `final`；可与页面 SSE、`/v1/voice/tts/stream` 自行编排） |
+| `GET` | `/v1/voice/dialog/stream` | **升级到 WebSocket**：单连接串联「麦克风→ASR→流式 Chat→实时 TTS」（便捷编排；见 **[语音：三块开放能力与编排](#语音三块开放能力与调用侧编排)**） |
+
+#### 语音：三块开放能力与编排 {#语音三块开放能力与调用侧编排}
+
+`fullmodel serve` 把端到端口语对话需要的 primitive 拆成 **三类可独立调用的能力**（HTTP / WebSocket），**不在服务端替你规定**「谁先谁后、是否要定稿再上屏」。**网关、App、Agent** 可自行组合：**流式语音识别只点亮 UI**，**送进 LLM 的用户话用本轮定稿**，**助手侧流式正文 + 流式 TTS**，等等。
+
+| 能力 | Serve 暴露（当前） | 说明 |
+|------|---------------------|------|
+| **语音识别（→ 文本）** | **`GET /v1/voice/asr/stream`** → **升级到 WebSocket**（双工推流：`start`→二进制 PCM/WAV、`finish`，下行 `partial` / `final`）；以及 **`POST /v1/messages`**，`kind` **`speech_to_text`**，`multipart/form-data` **整段**音频 | **推流**：边录边转、UI 可先刷 `partial`，**业务定稿可用 `final` 再走 LLM**（由调用方决定）。**Multipart**：一轮完整文件转写（已录完再请求）。底层 Fun-ASR，模型见 **`brains.asr`**。 |
+| **LLM（文本理解与生成）** | **`POST /v1/messages`** 或 **`POST /v1/chat`**，`"stream": true` | HTTP 响应为 **`text/event-stream`（SSE）**，按事件推送助手增量文本；可加 **`session_id`** 与会话记忆。 |
+| **流式语音合成** | **`GET /v1/voice/tts/stream`** → **升级到 WebSocket** | 下发 **PCM**（二进制）与原厂商事件 JSON（`response.audio.delta`、`session.finished` 等）；音色 / `voice_realtime_ws` 模型等与文档「实时语音合成」一节一致。 |
+
+**便捷串联（非必须）：** **`GET /v1/voice/dialog/stream`**（WebSocket）在 **单连接** 内做完「binary 麦克风 → **`op:asr` JSON → 二进制 TTS → `op:assistant`」**，等价于对上述三件的 **reference 编排**。集成方若为最低延迟或可观测性拆解管线，可直接调三个底层入口，无需使用 dialog。流式 ASR 的握手与载荷细节见 **[WebSocket：流式语音识别](#websocket-voice-asr-stream)**。
+
+**Roadmap · 能力与文档（建议实施顺序）：**
+
+1. ~~**流式语音识别 API**：~~已实现 **`GET /v1/voice/asr/stream`**（WebSocket 双工：**partial / final**）。**何时用 `final` 调 LLM** 仍由调用方决定；建议在 UI 上对 `partial` 与定稿分界清楚。后续可补强 OpenAPI、`capabilities` 中的条目与字段说明。  
+2. **capabilities / OpenAPI**：在 **`GET /v1/capabilities`**（或等价 OpenAPI）中列出 **`speech_stream`、`chat_stream`、`tts_stream`**（名称可再定），标注鉴权、`stream` SSE 与 WS 升级路径，便于自动生成客户端。  
+3. **语义与节流**：三块接口独立限流 / 熔断 / 会话隔离；对话框场景在文档中给出 **推荐序列**（仅「建议」，非约束）。  
+4. **观测与 SLA**：为三块分别打点（首 partial、首 SSE chunk、首 PCM、错误码）；`[voice.dialog]` 可作为 **串联范例**保留。  
+5. **示例**：仓库内分别提供最小 **只做 ASR-WS / 只做 Chat-SSE / 只做 TTS-WS** 的示例脚本，再在文档中 **组合一章**「低延迟口述」的典型调用图。
+
+完成后，延迟优化可由调用方在 **streaming ASR + 定稿后 Chat + phrase-chunk TTS** 路径上独立完成，服务端只保证 **每一块 API 的稳定与文档一致**。
 
 #### REST：声音克隆（Qwen Voice Enrollment）
 
@@ -437,6 +464,7 @@ go run ./cmd/fullmodel serve \
 
 **`POST /v1/voice/customizations`**
 
+- **`fullmodel serve`**：**`target_model`** 在未传时使用 **`brains.voice_realtime_ws.model`**（与 **`GET /v1/voice/tts/stream`** 默认 realtime **`model`** 同源），网关/前端不必再推导；显式 **`target_model`** 仍可覆盖。不经 serve、只走 **`CloneVoice`** 时使用 SDK **`voiceClonePayload`** 自带的默认 **`target_model`**。
 - **JSON**：`application/json`，字段示例：
 
 ```json
@@ -454,7 +482,7 @@ go run ./cmd/fullmodel serve \
 
 （`audio_url`、`audio_data`、`audio_data_url` 三选一；与 SDK `VoiceCloneRequest` 一致。）
 
-- **`multipart/form-data`**：表单字段 `preferred_name`、`target_model`、`language`、`text`、`model`；音频任选 `audio` 文件、`audio_url` 或 `audio_data_url`。
+- **`multipart/form-data`**：表单字段 `preferred_name`、`target_model`（**serve 可省略**，见上文）、`language`、`text`、`model`；音频任选 `audio` 文件、`audio_url` 或 `audio_data_url`。
 
 **`DELETE /v1/voice/customizations/{voice}`**
 
@@ -466,7 +494,13 @@ go run ./cmd/fullmodel serve \
 # 列表
 curl -s "http://127.0.0.1:8080/v1/voice/customizations?page_size=20&page_index=1"
 
-# 克隆（上传文件）
+# 克隆（上传文件；不写 target_model 时由 serve 使用 brains.voice_realtime_ws.model）
+curl -s http://127.0.0.1:8080/v1/voice/customizations \
+  -F preferred_name=demo_voice_auto_model \
+  -F language=zh \
+  -F audio=@./sample.mp3
+
+# 克隆（显式 target_model，覆盖配置）
 curl -s http://127.0.0.1:8080/v1/voice/customizations \
   -F preferred_name=demo_voice \
   -F target_model=qwen3-tts-vc-realtime-2026-01-15 \
@@ -477,18 +511,55 @@ curl -s http://127.0.0.1:8080/v1/voice/customizations \
 curl -s -X DELETE "http://127.0.0.1:8080/v1/voice/customizations/<voice_id>"
 ```
 
+#### WebSocket：流式语音识别（`/v1/voice/asr/stream`） {#websocket-voice-asr-stream}
+
+与 **整段 multipart** 的 `speech_to_text` 不同，本入口为 **双工 WebSocket**：客户端持续发送 **音频二进制帧**，服务端将 Fun-ASR **实时结果**以 JSON 回推。模型由 **`brains.asr.model`** 决定（默认与文档示例一致，如 `fun-asr-realtime`）。实现见 `cmd/fullmodel/voice_asr_stream.go`。
+
+**典型用途**：页面上 **`partial` 先出字**；**`final` 作为本轮定稿**再调 **`POST /v1/messages`**（`"stream": true`，SSE）与 **`GET /v1/voice/tts/stream`** 做低延迟编排。仓库参考页：`examples/voice_dialog_web/index.html`（模式 C）。
+
+**握手**
+
+- 方法 **`GET`**，路径 **`/v1/voice/asr/stream`**，协议升级为 WebSocket（`ws://` / `wss://`）。
+- 查询参数（可选）：**`api_key`** — 与 HTTP 一样在浏览器侧无法自定义 Header 时用（与 `GET /v1/voice/tts/stream` 相同约定）。
+
+**客户端 → 服务端**
+
+| 类型 | 内容 | 说明 |
+|------|------|------|
+| 文本 JSON | `{"op":"ping"}` | 心跳；服务端返回 `pong`。 |
+| 文本 JSON | `{"op":"start","format":"pcm","sample_rate":16000}` | 开始一轮识别。`format`：`pcm` 或 **`wav`**，缺省 **`pcm`**；`sample_rate` 缺省 **16000**。发送 **`start`** 会结束上一轮上游任务并重开。 |
+| **二进制** | 原始音频块 | **仅在收到 `started` 之后**发送；`pcm` 为 **s16le 单声道**，`sample_rate` 与 **`start`** 一致。单轮累计超过约 **20 MiB** 时服务端报错并断开上游。 |
+| 文本 JSON | `{"op":"finish"}` | 告知本轮音频结束；服务端向上游发 `finish-task`，随后在下游发 **`final`**（见下）。需已 **`start`** 且上游仍为 active。 |
+
+**服务端 → 客户端（文本 JSON）**
+
+| `op` | 字段（节选） | 含义 |
+|------|----------------|------|
+| `welcome` | `path` | 连接就绪。 |
+| `pong` | `t` | 毫秒时间戳。 |
+| `started` | `format`, `sample_rate`, `task_id` | 上游 **`task-started`** 已就绪，可开始发二进制音频。 |
+| `partial` | `text`, `sentence_end`, `task_id` | 中间识别；`sentence_end: true` 表示一句边界（便于分段上屏）。 |
+| `final` | `text`, `task_id` | 本轮定稿（多句时用换行拼接）；收到后再走 LLM / TTS 由调用方决定。 |
+| `error` | `message`, `task_id`（可选） | 错误说明。 |
+
+浏览器调试时注意：静态页与 API **不同端口**时 ，需 **`fullmodel serve` 启用 CORS**（见 serve 初始化）或将前后端同源代理到同一主机。
+
 #### WebSocket：实时语音合成（Qwen Realtime TTS）
 
 终端或浏览器通过 **`ws://`**（或 **`wss://`**）连接上述路径。服务端再与阿里云 DashScope **Qwen 实时 TTS** WebSocket 建连；这与 **`POST /v1/messages`** 且 `kind` 为 **`text_to_speech`** 所使用的 **CosyVoice（inference）** 链路不同。
 
-配置里 `brains.voice.model` 常见为 **`cosyvoice-v3-flash`**（给 ASR、非实时 TTS 等用）。本 WebSocket 会自动选用 **`qwen3-tts-flash-realtime`** 一类带 **`realtime`** 的模型；若在 query 中显式传入其它 realtime 模型 id，则以显式为准。
+| 配置项 | 用途 |
+|--------|------|
+| `brains.voice.model`（如 **`cosyvoice-v3-flash`**） | **`/v1/messages`** 的 **`text_to_speech`** 等非实时 CosyVoice 链路 |
+| `brains.asr.model`（如 **`fun-asr-realtime`**） | Fun-ASR： **`speech_to_text`**、**`/v1/voice/asr/stream`**、`/v1/voice/dialog/stream` 内的 ASR 等（勿把 TTS 模型 id 配进此项） |
+| `brains.voice_realtime_ws.model` | **`fullmodel serve` 同源配置**：默认为 **`qwen3-tts-vc-realtime-2026-01-15`**（可被 YAML 覆盖）；既作为 **`GET /v1/voice/tts/stream`** 的首选 realtime **`model`（合并后非空时优先于 `?model=`），也用于 **`POST /v1/voice/customizations`** 在省略 **`target_model`** 时的填入，使克隆音色与默认实时合成闭环** |
 
 **握手时的查询参数（可选）**
 
 | 参数 | 说明 |
 |------|------|
-| `voice` | 音色，默认 `Cherry` |
-| `model` | Qwen 实时 TTS 模型 id；省略则按内部规则选择 |
+| `voice` | 音色：**内置名**（如 `Cherry`）或 **`POST /v1/voice/customizations` 返回的 `voice` id**（克隆）；须与 realtime **`model` / `target_model`** 体系一致 |
+| `model` | **通常不必写**：服务端已用 **`brains.voice_realtime_ws.model`**（内置默认或与 YAML 一致）；仅在合并该项为空时才看 **`?model=`** 再走 SDK |
 | `mode` | `server_commit`（默认）或 `commit` |
 | `language_type` | 如 `Chinese` |
 | `format` | 默认 `pcm` |
@@ -539,7 +610,7 @@ go run ./examples/voice_tts_ws_client \
 ffplay -f s16le -ar 24000 -ch_layout mono tts_out.pcm
 ```
 
-**日志前缀**：`[voice.ws]` 为对客户端的 WebSocket；`[voice.realtime_tts]` 为连 DashScope 一侧。实现见 `cmd/fullmodel/voice_stream.go`、`voice_realtime.go`。
+**日志前缀（TTS WebSocket 桥）**：`[voice.tts.client]` 为客户端连 **fullmodel** 的 `GET /v1/voice/tts/stream`；`[voice.realtime_ws] leg=upstream` 为 fullmodel **出站** 与实时 TTS 的 WebSocket 握手（`endpoint_key=tts_realtime_ws` 等）；`[voice.tts.upstream]` 为握手成功后的上游协议（`session.update`、音频/事件）。实现见 `cmd/fullmodel/voice_stream.go`、`voice_realtime.go`。
 
 ## CLI 调试
 
@@ -801,6 +872,8 @@ brains:
     model: qwen-vl-plus
   voice:
     model: cosyvoice-v3-flash
+  voice_realtime_ws:
+    model: qwen3-tts-vc-realtime-2026-01-15
   image:
     model: qwen-image-2.0-pro
   omni:
@@ -832,6 +905,8 @@ brains:
     model: qwen-vl-plus
   voice:
     model: cosyvoice-v3-flash
+  voice_realtime_ws:
+    model: qwen3-tts-vc-realtime-2026-01-15
   image:
     model: qwen-image-2.0-pro
   omni:

@@ -31,6 +31,44 @@ const (
 	RealtimeDialogRespondTranscript = "transcript"
 )
 
+// qwen3TTSSystemVoiceLower names built-in Qwen realtime TTS voices (Flash / Instruct families).
+// qwen3-tts-vc-realtime is for cloned or designed voice IDs; pairing VC with these names breaks speak
+// (upstream CLIENT_ERROR). See Qwen realtime voice list (system voices vs VC).
+var qwen3TTSSystemVoiceLower = map[string]struct{}{
+	"aiden": {}, "alek": {}, "andre": {}, "arthur": {}, "bella": {}, "bellona": {}, "bunny": {},
+	"bodega": {}, "chelsie": {}, "cherry": {}, "dolce": {}, "dylan": {}, "ebona": {},
+	"eldric sage": {}, "elias": {}, "emilien": {}, "eric": {}, "ethan": {}, "jada": {},
+	"jennifer": {}, "kai": {}, "katerina": {}, "kiki": {}, "lenn": {}, "li": {}, "maia": {},
+	"marcus": {}, "mia": {}, "mochi": {}, "momo": {}, "moon": {}, "neil": {}, "nini": {},
+	"nofish": {}, "ono anna": {}, "peter": {}, "pip": {}, "radio gol": {},
+	"rocky": {}, "roy": {}, "ryan": {}, "serena": {}, "seren": {}, "sohee": {}, "sonrisa": {},
+	"stella": {}, "sunny": {}, "vincent": {}, "vivian": {},
+}
+
+func isQwen3TTSSystemVoice(voice string) bool {
+	v := strings.ToLower(strings.TrimSpace(voice))
+	if v == "" {
+		return false
+	}
+	_, ok := qwen3TTSSystemVoiceLower[v]
+	return ok
+}
+
+// realtimeTTSModelResolved returns the WebSocket/session model name to use for TTS.
+// VC realtime models reject documented system voices; use Flash realtime instead.
+func realtimeTTSModelResolved(configuredModel, voice string) string {
+	m := strings.TrimSpace(configuredModel)
+	if m == "" {
+		return m
+	}
+	if strings.Contains(strings.ToLower(m), "tts-vc-realtime") && isQwen3TTSSystemVoice(voice) {
+		logging.Info("[voice.tts.upstream] model_resolve vc_skip_builtin_voice voice=%q configured_model=%q effective_model=%s",
+			strings.TrimSpace(voice), m, QwenTTSFlashRealtimeModel)
+		return QwenTTSFlashRealtimeModel
+	}
+	return m
+}
+
 // VoiceCloneRequest creates a custom Qwen voice from a short audio sample.
 // TargetModel must match the later TTS model that will use the returned voice.
 type VoiceCloneRequest struct {
@@ -276,7 +314,8 @@ func (c *Client) RealtimeTTS(ctx context.Context, cfg RealtimeTTSConfig) (*Realt
 	if model == "" || !strings.Contains(strings.ToLower(model), "realtime") {
 		model = QwenTTSFlashRealtimeModel
 	}
-	logging.Info("[voice.realtime_tts] phase=begin effective_model=%s voice=%s mode=%s format=%s sample_rate=%d region=%s",
+	model = realtimeTTSModelResolved(model, cfg.Voice)
+	logging.Info("[voice.tts.upstream] leg=upstream phase=session_params effective_model=%s voice=%s mode=%s format=%s sample_rate=%d region=%s chain=\"next: [voice.realtime_ws] ws_handshake for endpoint_key=tts_realtime_ws\"",
 		model, defaultString(cfg.Voice, "Cherry"), defaultString(cfg.Mode, QwenRealtimeModeServerCommit),
 		defaultString(cfg.ResponseFormat, "pcm"), defaultInt(cfg.SampleRate, 24000), c.voiceConfig.Region)
 
@@ -315,7 +354,7 @@ func (c *Client) RealtimeTTS(ctx context.Context, cfg RealtimeTTSConfig) (*Realt
 		_ = s.Close()
 		return nil, err
 	}
-	logging.Info("[voice.realtime_tts] phase=session_update_sent model=%s voice=%s mode=%s sample_rate=%v format=%s lang=%s",
+	logging.Info("[voice.tts.upstream] phase=session_update_sent model=%s voice=%s mode=%s sample_rate=%v format=%s lang=%s",
 		model, update["voice"], update["mode"], update["sample_rate"], update["response_format"], update["language_type"])
 	return s, nil
 }
@@ -361,11 +400,11 @@ func (s *RealtimeTTSSession) Events() <-chan RealtimeEvent { return s.events }
 func (s *RealtimeTTSSession) Audio() <-chan []byte { return s.audio }
 
 func (s *RealtimeTTSSession) Close() error {
-	logging.Info("[voice.realtime_tts] phase=session_close")
+	logging.Info("[voice.tts.upstream] phase=session_close")
 	s.cancel()
 	err := s.conn.Close()
 	if err != nil {
-		logging.Warn("[voice.realtime_tts] session_close_ws err=%v", err)
+		logging.Warn("[voice.tts.upstream] session_close_ws err=%v", err)
 	}
 	return err
 }
@@ -406,7 +445,7 @@ func (s *RealtimeTTSSession) send(eventType string, body map[string]any) error {
 	for k, v := range body {
 		msg[k] = v
 	}
-	logging.Info("[voice.realtime_tts] client_send type=%s seq=%d event_id=%s", eventType, s.seq, msg["event_id"])
+	logging.Info("[voice.tts.upstream] client_send type=%s seq=%d event_id=%s", eventType, s.seq, msg["event_id"])
 	return s.conn.WriteJSON(msg)
 }
 
@@ -415,18 +454,18 @@ func (s *RealtimeTTSSession) readLoop() {
 	var audioDeltas int64
 	var dispatchedEvents int64
 	defer func() {
-		logging.Info("[voice.realtime_tts] phase=readLoop_exit reason=%s upstream_audio_deltas=%d dispatched_events=%d audio_chan_len=%d audio_chan_cap=%d events_chan_len=%d events_chan_cap=%d",
+		logging.Info("[voice.tts.upstream] phase=readLoop_exit reason=%s upstream_audio_deltas=%d dispatched_events=%d audio_chan_len=%d audio_chan_cap=%d events_chan_len=%d events_chan_cap=%d",
 			exitReason, atomic.LoadInt64(&audioDeltas), atomic.LoadInt64(&dispatchedEvents), len(s.audio), cap(s.audio), len(s.events), cap(s.events))
 	}()
 	defer close(s.done)
 	defer close(s.events)
 	defer close(s.audio)
-	logging.Info("[voice.realtime_tts] phase=readLoop_start")
+	logging.Info("[voice.tts.upstream] phase=readLoop_start")
 	for {
 		msgType, data, err := s.conn.ReadMessage()
 		if err != nil {
 			exitReason = "ws_read_error"
-			logging.Warn("[voice.realtime_tts] readLoop read_error err=%v", err)
+			logging.Warn("[voice.tts.upstream] readLoop read_error err=%v", err)
 			select {
 			case <-s.ctx.Done():
 			case s.errs <- err:
@@ -435,30 +474,46 @@ func (s *RealtimeTTSSession) readLoop() {
 			return
 		}
 		if msgType == websocket.BinaryMessage {
-			logging.Warn("[voice.realtime_tts] readLoop unexpected_binary bytes=%d", len(data))
+			logging.Warn("[voice.tts.upstream] readLoop unexpected_binary bytes=%d", len(data))
 			continue
 		}
 		var raw map[string]any
 		if err := json.Unmarshal(data, &raw); err != nil {
-			logging.Warn("[voice.realtime_tts] readLoop skip_non_json bytes=%d err=%v preview=%s",
+			logging.Warn("[voice.tts.upstream] readLoop skip_non_json bytes=%d err=%v preview=%s",
 				len(data), err, voiceLogPreview(string(data), 160))
 			continue
 		}
 		ev := RealtimeEvent{Type: stringValue(raw["type"]), EventID: stringValue(raw["event_id"]), Raw: raw}
 		if ev.Type != "" && ev.Type != "response.audio.delta" {
-			logging.Info("[voice.realtime_tts] upstream_event type=%s event_id=%s", ev.Type, ev.EventID)
+			logging.Info("[voice.tts.upstream] upstream_event type=%s event_id=%s", ev.Type, ev.EventID)
 		}
-		if errMap := mapValue(raw["error"]); len(errMap) > 0 {
-			ev.ErrorCode = stringValue(errMap["code"])
-			ev.Error = stringValue(errMap["message"])
+		if errRaw, hasErr := raw["error"]; hasErr && errRaw != nil {
+			errMap := mapValue(errRaw)
+			if len(errMap) > 0 {
+				ev.ErrorCode = stringValue(errMap["code"])
+				ev.Error = stringValue(errMap["message"])
+			} else {
+				if b, mErr := json.Marshal(errRaw); mErr == nil {
+					ev.Error = string(b)
+				} else {
+					ev.Error = fmt.Sprintf("%v", errRaw)
+				}
+			}
 			exitReason = "upstream_error_event"
-			logging.Error("[voice.realtime_tts] upstream_error code=%s message=%s", ev.ErrorCode, ev.Error)
+			reqID := stringValue(raw["request_id"])
+			errDetail := logging.CompactJSONForLog(errRaw, 8000)
+			logging.Error("[voice.tts.upstream] upstream_error code=%s message=%s request_id=%s event_type=%s event_id=%s error_json=%s",
+				ev.ErrorCode, ev.Error, reqID, ev.Type, ev.EventID, errDetail)
 			select {
 			case s.events <- ev:
 			default:
 			}
+			errForChan := ev.Error
+			if ev.ErrorCode != "" {
+				errForChan = fmt.Sprintf("%s: %s", ev.ErrorCode, ev.Error)
+			}
 			select {
-			case s.errs <- fmt.Errorf("%s: %s", ev.ErrorCode, ev.Error):
+			case s.errs <- fmt.Errorf("%s", errForChan):
 			default:
 			}
 			return
@@ -467,30 +522,30 @@ func (s *RealtimeTTSSession) readLoop() {
 			deltaB64 := stringValue(raw["delta"])
 			chunk, err := base64.StdEncoding.DecodeString(deltaB64)
 			if err != nil {
-				logging.Warn("[voice.realtime_tts] audio_delta_b64_decode_failed err=%v delta_len=%d preview=%s",
+				logging.Warn("[voice.tts.upstream] audio_delta_b64_decode_failed err=%v delta_len=%d preview=%s",
 					err, len(deltaB64), voiceLogPreview(deltaB64, 48))
 			} else if len(chunk) == 0 {
-				logging.Warn("[voice.realtime_tts] audio_delta_empty_after_decode delta_len=%d", len(deltaB64))
+				logging.Warn("[voice.tts.upstream] audio_delta_empty_after_decode delta_len=%d", len(deltaB64))
 			} else {
 				n := atomic.AddInt64(&audioDeltas, 1)
 				if n == 1 {
-					logging.Info("[voice.realtime_tts] phase=first_upstream_audio_delta bytes=%d", len(chunk))
+					logging.Info("[voice.tts.upstream] phase=first_upstream_audio_delta bytes=%d", len(chunk))
 				} else if n%100 == 0 {
-					logging.Info("[voice.realtime_tts] upstream_audio_delta_progress deltas=%d last_chunk_bytes=%d", n, len(chunk))
+					logging.Info("[voice.tts.upstream] upstream_audio_delta_progress deltas=%d last_chunk_bytes=%d", n, len(chunk))
 				}
 				ev.Audio = chunk
 				if n == 1 || n%20 == 0 || len(s.audio) >= cap(s.audio)-1 {
-					logging.Info("[voice.realtime_tts] audio_chan_send_begin delta=%d chunk_bytes=%d audio_chan_len=%d audio_chan_cap=%d events_chan_len=%d events_chan_cap=%d",
+					logging.Info("[voice.tts.upstream] audio_chan_send_begin delta=%d chunk_bytes=%d audio_chan_len=%d audio_chan_cap=%d events_chan_len=%d events_chan_cap=%d",
 						n, len(chunk), len(s.audio), cap(s.audio), len(s.events), cap(s.events))
 				}
 				select {
 				case s.audio <- chunk:
 					if n == 1 || n%20 == 0 || len(s.audio) >= cap(s.audio)-1 {
-						logging.Info("[voice.realtime_tts] audio_chan_send_ok delta=%d audio_chan_len=%d audio_chan_cap=%d",
+						logging.Info("[voice.tts.upstream] audio_chan_send_ok delta=%d audio_chan_len=%d audio_chan_cap=%d",
 							n, len(s.audio), cap(s.audio))
 					}
 				default:
-					logging.Warn("[voice.realtime_tts] audio_chan_send_dropped delta=%d chunk_bytes=%d audio_chan_len=%d audio_chan_cap=%d",
+					logging.Warn("[voice.tts.upstream] audio_chan_send_dropped delta=%d chunk_bytes=%d audio_chan_len=%d audio_chan_cap=%d",
 						n, len(chunk), len(s.audio), cap(s.audio))
 				}
 			}
@@ -498,7 +553,7 @@ func (s *RealtimeTTSSession) readLoop() {
 		if ev.Type == "response.audio.delta" {
 			n := atomic.LoadInt64(&audioDeltas)
 			if n == 1 || n%20 == 0 || len(s.events) >= cap(s.events)-1 {
-				logging.Info("[voice.realtime_tts] event_chan_send_begin type=%s delta=%d events_chan_len=%d events_chan_cap=%d",
+				logging.Info("[voice.tts.upstream] event_chan_send_begin type=%s delta=%d events_chan_len=%d events_chan_cap=%d",
 					ev.Type, n, len(s.events), cap(s.events))
 			}
 		}
@@ -508,19 +563,19 @@ func (s *RealtimeTTSSession) readLoop() {
 			if ev.Type == "response.audio.delta" {
 				delta := atomic.LoadInt64(&audioDeltas)
 				if delta == 1 || delta%20 == 0 || len(s.events) >= cap(s.events)-1 {
-					logging.Info("[voice.realtime_tts] event_chan_send_ok type=%s delta=%d dispatched_events=%d events_chan_len=%d events_chan_cap=%d",
+					logging.Info("[voice.tts.upstream] event_chan_send_ok type=%s delta=%d dispatched_events=%d events_chan_len=%d events_chan_cap=%d",
 						ev.Type, delta, n, len(s.events), cap(s.events))
 				}
 			}
 		case <-s.ctx.Done():
 			exitReason = "ctx_done_while_dispatch"
-			logging.Warn("[voice.realtime_tts] event_chan_send_ctx_done type=%s err=%v events_chan_len=%d events_chan_cap=%d",
+			logging.Warn("[voice.tts.upstream] event_chan_send_ctx_done type=%s err=%v events_chan_len=%d events_chan_cap=%d",
 				ev.Type, s.ctx.Err(), len(s.events), cap(s.events))
 			return
 		}
 		if ev.Type == "session.finished" {
 			exitReason = "session.finished"
-			logging.Info("[voice.realtime_tts] phase=upstream_session_finished_event")
+			logging.Info("[voice.tts.upstream] phase=upstream_session_finished_event")
 			return
 		}
 	}
@@ -694,7 +749,18 @@ func (s *RealtimeDialogSession) readLoop() {
 		}
 		var raw map[string]any
 		if err := json.Unmarshal(data, &raw); err != nil {
+			logging.Warn("[voice.realtime_dialog] readLoop skip_non_json bytes=%d err=%v preview=%s",
+				len(data), err, voiceLogPreview(string(data), 200))
 			continue
+		}
+		if hdr := mapValue(raw["header"]); len(hdr) > 0 {
+			evt := stringValue(hdr["event"])
+			code := stringValue(hdr["error_code"])
+			if evt == "task-failed" || code != "" {
+				logging.Error("[voice.realtime_dialog] upstream_error event=%s code=%s message=%s header_json=%s frame_json=%s",
+					evt, code, stringValue(hdr["error_message"]),
+					logging.CompactJSONForLog(hdr, 4000), logging.CompactJSONForLog(raw, 8000))
+			}
 		}
 		if output := mapValue(mapValue(raw["payload"])["output"]); len(output) > 0 {
 			if dialogID := stringValue(output["dialog_id"]); dialogID != "" {
@@ -735,9 +801,13 @@ func (c *Client) doVoiceCustomization(ctx context.Context, payload map[string]an
 	data, _ := io.ReadAll(resp.Body)
 	var decoded map[string]any
 	if err := json.Unmarshal(data, &decoded); err != nil {
+		logging.Error("[voice.customization] response_not_json status=%d err=%v raw=%s",
+			resp.StatusCode, err, logging.CompactJSONForLog(map[string]any{"body": string(data)}, 12000))
 		return nil, fmt.Errorf("voice customization returned HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(data)))
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		logging.Error("[voice.customization] http_error status=%d decoded=%s",
+			resp.StatusCode, logging.CompactJSONForLog(decoded, 12000))
 		return decoded, fmt.Errorf("voice customization returned HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(data)))
 	}
 	return decoded, nil
@@ -751,6 +821,32 @@ func (c *Client) voiceCustomizationURL() string {
 		return "https://dashscope-intl.aliyuncs.com/api/v1/services/audio/tts/customization"
 	}
 	return "https://dashscope.aliyuncs.com/api/v1/services/audio/tts/customization"
+}
+
+func wsURLHost(raw string) string {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	return u.Host
+}
+
+func dialVoiceWSTroubleHint(httpCode int) string {
+	switch {
+	case httpCode == http.StatusUnauthorized:
+		return "upstream_ws_handshake_401: rejecting Authorization Bearer (from brains.voice.api_key in llm.yaml). Wrong key, wrong host/region, or your gateway expects different auth. This is NOT the browser/app WebSocket to fullmodel /v1/voice/tts/stream."
+	case httpCode == http.StatusForbidden:
+		return "upstream_ws_handshake_403: check entitlement, IP allowlist, or policy on the WS host"
+	case httpCode >= 400 && httpCode < 500:
+		return fmt.Sprintf("upstream_ws_handshake_client_error http_code=%d", httpCode)
+	case httpCode >= 500:
+		return fmt.Sprintf("upstream_ws_handshake_server_error http_code=%d", httpCode)
+	default:
+		if httpCode == 0 {
+			return "no_http_response: network_tls_dns_or_timeout; if gorilla reports bad handshake, upstream may have returned non-101 before body was read"
+		}
+		return fmt.Sprintf("upstream_ws_handshake http_code=%d", httpCode)
+	}
 }
 
 // voiceRealtimeWSURL ensures ?model= is present on the Qwen realtime TTS WebSocket URL (required by DashScope).
@@ -774,11 +870,14 @@ func voiceRealtimeWSURL(endpoint, model string) string {
 
 func (c *Client) dialVoiceWS(ctx context.Context, endpointKey, cnURL, intlURL, attachModel string) (*websocket.Conn, error) {
 	endpoint := cnURL
+	urlSource := "default_urls_cn"
 	if c.voiceConfig.Region == brain.RegionSingapore {
 		endpoint = intlURL
+		urlSource = "default_urls_intl"
 	}
 	if custom, ok := c.voiceConfig.APIEndpoints[endpointKey]; ok && strings.TrimSpace(custom) != "" {
 		endpoint = strings.TrimSpace(custom)
+		urlSource = "brains.voice.endpoints." + endpointKey
 	}
 	if strings.TrimSpace(attachModel) != "" {
 		endpoint = voiceRealtimeWSURL(endpoint, attachModel)
@@ -786,17 +885,29 @@ func (c *Client) dialVoiceWS(ctx context.Context, endpointKey, cnURL, intlURL, a
 	header := http.Header{}
 	header.Set("Authorization", "Bearer "+c.voiceConfig.APIKey)
 	header.Set("User-Agent", "fullmodel-go-sdk")
-	logging.Info("[voice.ws] dial endpoint_key=%s endpoint=%s", endpointKey, endpoint)
+	logging.Info("[voice.realtime_ws] leg=upstream phase=ws_handshake_begin endpoint_key=%s host=%s url=%s url_source=%s auth=Bearer(brains.voice.api_key)",
+		endpointKey, wsURLHost(endpoint), endpoint, urlSource)
 	conn, resp, err := websocket.DefaultDialer.DialContext(ctx, endpoint, header)
 	if err != nil {
+		httpCode := 0
 		if resp != nil {
-			logging.Error("[voice.ws] dial failed endpoint_key=%s err=%v http_status=%s", endpointKey, err, resp.Status)
+			httpCode = resp.StatusCode
+		}
+		trouble := dialVoiceWSTroubleHint(httpCode)
+		if resp != nil && resp.Body != nil {
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 16384))
+			_ = resp.Body.Close()
+			logging.Error("[voice.realtime_ws] leg=upstream phase=ws_handshake_failed endpoint_key=%s host=%s url=%s url_source=%s err=%v http_status=%s http_code=%d detail=%s trouble=%s",
+				endpointKey, wsURLHost(endpoint), endpoint, urlSource, err, resp.Status, httpCode,
+				logging.CompactJSONForLog(map[string]any{"body": string(body)}, 12000), trouble)
 		} else {
-			logging.Error("[voice.ws] dial failed endpoint_key=%s err=%v", endpointKey, err)
+			logging.Error("[voice.realtime_ws] leg=upstream phase=ws_handshake_failed endpoint_key=%s host=%s url=%s url_source=%s err=%v http_code=%d trouble=%s",
+				endpointKey, wsURLHost(endpoint), endpoint, urlSource, err, httpCode, trouble)
 		}
 		return nil, err
 	}
-	logging.Info("[voice.ws] phase=dial_ok endpoint_key=%s proto=%s", endpointKey, conn.Subprotocol())
+	logging.Info("[voice.realtime_ws] leg=upstream phase=ws_handshake_ok endpoint_key=%s host=%s subprotocol=%s",
+		endpointKey, wsURLHost(endpoint), conn.Subprotocol())
 	return conn, err
 }
 
