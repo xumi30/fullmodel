@@ -9,7 +9,7 @@ profiles:
 
 brains:
   text:
-    model: qwen-plus
+    model: qwen3.6-plus
   vision:
     model: qwen-vl-plus
   voice:

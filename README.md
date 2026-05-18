@@ -684,19 +684,159 @@ runner := agentruntime.NewRunner(registry, toolExecutor)
 
 ## HTTP 请求格式
 
-`POST /v1/messages` 使用统一 JSON：
+### POST /v1/messages
+
+统一消息入口，完整参数见下。支持 `application/json` 和 `multipart/form-data` 两种 Content-Type。
+
+### POST /v1/chat
+
+聊天快捷入口，**与 `/v1/messages` 共用同一套参数**，仅 `kind` 默认值为 `"text"`。适用场景：纯文本多轮对话时前端无需填写 `kind` 字段。
+
+```bash
+curl -s http://127.0.0.1:8080/v1/chat \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "session_id": "demo",
+    "text": "你好",
+    "stream": false,
+    "system": "你是一个简洁的助手",
+    "options": {
+      "model": "qwen-plus",
+      "temperature": 0.7,
+      "disable_default_tools": true
+    }
+  }'
+```
+
+### 请求参数
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `kind` | string | 是 | 消息类型，见下方取值 |
+| `session_id` | string | 否 | 会话 ID，用于多轮对话记忆 |
+| `system` | string | 否 | 系统提示词（仅 `kind: "text"` 时有效） |
+| `prompt` | string | 否 | 用户提示词 |
+| `text` | string | 否 | 同 `prompt`，用于 `text` / `text_to_speech` 等 kind |
+| `stream` | bool | 否 | 是否 SSE 流式返回，默认 false |
+| `messages` | array | 否 | 预组装的多轮消息数组（`kind: "chat"` 时使用） |
+| `media` | object | 否 | 多模态媒体资源容器 |
+| `options` | object | 否 | 高级处理选项 |
+
+**`media` 子字段：**
+
+每个 media 条目结构为 `{ url, data, mime_type }`，三种方式任选其一：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `image` | object | 图片资源（url / base64 data） |
+| `audio` | object | 音频资源 |
+| `video` | object | 视频资源 |
+| `first_frame` | object | 首帧图片（`kind: "image_to_video"` 时使用） |
+
+**`options` 子字段：**
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `model` | string | 覆盖使用的模型 |
+| `temperature` | float | 采样温度 |
+| `top_p` | float | 核采样参数 |
+| `max_tokens` | int | 最大输出 token 数 |
+| `disable_default_tools` | bool | 是否禁用默认工具注入，默认 false |
+| `extra` | object | 供应商特定参数（如 TTS 的 `voice`、`format`、`sample_rate`） |
+
+**`kind` 取值：**
+
+| 值 | 说明 |
+|------|------|
+| `text` | 文本对话（支持 system prompt + 会话历史） |
+| `chat` | 预组装的多轮消息 |
+| `image` | 图片理解分析 |
+| `video` | 视频理解分析 |
+| `speech_to_text` | 语音识别（ASR） |
+| `text_to_speech` | 语音合成（TTS） |
+| `image_generate` | 文生图 |
+| `image_edit` | 图片编辑 |
+| `text_to_video` | 文生视频 |
+| `image_to_video` | 图生视频 |
+| `multimodal` | 多模态内容 |
+| `omni` | 全模态（Qwen-Omni，可组合 audio/image/video） |
+
+**`messages` 数组中每条消息的结构：**
 
 ```json
 {
-  "kind": "image",
-  "prompt": "这张图片里有什么？",
+  "role": "system|user|assistant|tool",
+  "content": "文本 或 [multi-part content]",
+  "reasoning_content": "思考过程（可选）",
+  "tool_calls": [{ "type": "function", ... }],
+  "partial": false
+}
+```
+
+**完整请求示例：**
+
+```json
+{
+  "kind": "text",
+  "session_id": "demo-session",
+  "system": "You are a helpful assistant.",
+  "text": "写一段很短的故事",
+  "stream": true,
   "media": {
-    "image": {
-      "url": "https://example.com/cat.png"
+    "image": { "url": "https://example.com/img.png", "mime_type": "image/png" }
+  },
+  "options": {
+    "model": "qwen-max",
+    "temperature": 0.8,
+    "top_p": 0.9,
+    "max_tokens": 2048,
+    "disable_default_tools": false,
+    "extra": {
+      "voice": "longxiaochun_v3",
+      "format": "mp3",
+      "sample_rate": 24000
     }
   }
 }
 ```
+
+### 默认工具注入
+
+`POST /v1/messages` 默认会向模型注入以下 8 个内置工具，使模型具备联网搜索、天气查询、时间计算等能力：
+
+| 工具名 | 用途 |
+|------|------|
+| `current_time` | 获取当前时间 |
+| `time` | 时间相关操作 |
+| `calculate_time` | 时间计算 |
+| `geocoding` | 地理编码 |
+| `weather` | 天气查询 |
+| `wikipedia_search` | Wikipedia 搜索 |
+| `baidu_search` | 百度搜索 |
+| `market` | 行情查询 |
+
+默认工具注入的触发条件：
+1. `options.tools` 为空/未提供
+2. `options.disable_default_tools` 为 `false`（默认值）
+3. 请求为非流式 `text` / `chat` 类型
+
+若模型返回 tool_calls，runtime 会自动执行工具并将结果回灌给模型（最多 4 轮），生成最终回答。
+
+**禁用默认工具：**
+
+```json
+{
+  "kind": "text",
+  "text": "你好",
+  "options": {
+    "disable_default_tools": true
+  }
+}
+```
+
+或提供自定义 tools 列表也会跳过默认注入。
+
+### 响应格式
 
 响应统一包在 envelope 里：
 
@@ -709,6 +849,8 @@ runner := agentruntime.NewRunner(registry, toolExecutor)
   }
 }
 ```
+
+流式响应时返回 `text/event-stream`（SSE），事件类型：`delta`（增量文本）、`error`、`done`。
 
 ### 长任务
 

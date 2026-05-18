@@ -13,12 +13,25 @@ type TextBrain struct {
 	client *http.Client
 }
 
-// NewTextBrain 创建新的文本处理大脑
+// NewTextBrain 创建新的文本处理大脑。
+//
+// 这里**不**用 http.Client.Timeout：它是"整个请求"的硬上限，对流式响应来说
+// 就是"读流体的总时长"，长输出（写小说、大 JSON 萃取）会被无情切断。
+// 取而代之，我们用 Transport.ResponseHeaderTimeout 控制握手阶段，body 读取
+// 完全交由调用方的 ctx 取消——这才是 Go 流式 HTTP 的正确做法。
 func NewTextBrain(config *QwenConfig) *TextBrain {
+	transport := &http.Transport{
+		ResponseHeaderTimeout: 30 * time.Second, // 连接 + 握手 + 等响应头：30s 上限
+		ExpectContinueTimeout: 1 * time.Second,
+		IdleConnTimeout:       90 * time.Second,
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   10,
+	}
 	return &TextBrain{
 		config: config,
 		client: &http.Client{
-			Timeout: 60 * time.Second,
+			Transport: transport,
+			// Timeout: 0，没有整体 deadline，靠 ctx 控制
 		},
 	}
 }
